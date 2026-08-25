@@ -36,11 +36,25 @@ scale as each other. That's intentional (see 07's docstring), but worth
 remembering if you ever want to compare magnitudes across taxa within a
 panel rather than just within a taxon's own row across timepoints/contrasts.
 
+Produces, per system, a main plot (Tailocin vs Buffer only -- the comparison
+that actually matters for the figure), a supplemental plot (adds the
+delTFA/TFA structural-mutant contrast alongside it), and a collapsed plot
+(Tailocin vs Buffer only, all timepoints/dpi pooled into one overall estimate
+per member per background -- for a quick "does tailocin affect this member
+at all, averaged across the whole time course" view, separate from the
+timepoint-resolved main plot). All three are built from the CLR data
+directly; the collapsed view runs its own t-tests and its own FDR
+correction (a different, smaller test family than the timepoint-resolved
+plots) rather than summarizing their per-timepoint results. Use
+--skip-supplemental-plot to skip the delTFA/TFA supplemental plot only --
+the collapsed plot is always produced.
+
 Usage:
     python 08_tailocin_effect_plot.py \
         --clr-invitro clr_out/clr_invitro_long.csv \
         --clr-inplanta-trial2 clr_out/clr_inplanta_trial2_long.csv \
-        --output-dir effect_plots
+        --output-dir effect_plots \
+        [--skip-supplemental-plot]
 """
 
 import argparse
@@ -150,8 +164,14 @@ def compute_effects(clr_long, background_col, time_col, treatment_col,
     return results
 
 
-def plot_effects(results, contrasts, title, out_path, taxon_order=None):
-    contrast_labels = [f'{a} - {b}' for a, b in contrasts]
+def plot_effects(results, contrasts_to_plot, title, out_path, taxon_order=None):
+    """contrasts_to_plot: list of (treatment_a, treatment_b) tuples to actually
+    draw -- can be a subset of what's in `results` (e.g. just Tailocin-Buffer
+    for a main figure, even though `results` also has Tailocin-delTFA computed
+    for supplemental use). Dodge is only applied when >1 contrast is drawn."""
+    contrast_labels = [f'{a} - {b}' for a, b in contrasts_to_plot]
+    results = results[results['contrast'].isin(contrast_labels)]
+
     backgrounds = list(dict.fromkeys(results['background']))  # preserve order
     timepoints = sorted(results['timepoint'].unique(), key=numeric_sort_key)
 
@@ -183,7 +203,7 @@ def plot_effects(results, contrasts, title, out_path, taxon_order=None):
     else:
         xlim = (-1, 1)
 
-    dodge = 0.15
+    dodge = 0.15 if len(contrast_labels) > 1 else 0.0
     for r, bg in enumerate(backgrounds):
         for c, tp in enumerate(timepoints):
             ax = axes[r][c]
@@ -239,11 +259,157 @@ def plot_effects(results, contrasts, title, out_path, taxon_order=None):
     print(f'  wrote {out_path}')
 
 
+def compute_effects_collapsed(clr_long, background_col, treatment_col, backgrounds, contrast,
+                               replicate_id_col=None):
+    """
+    Same idea as compute_effects(), but pools every timepoint/dpi together
+    within each (background, taxon) group before running the t-test -- gives
+    a single "what's the overall effect of tailocin on this member, averaged
+    across the whole time course" estimate per background, instead of one
+    estimate per timepoint.
+
+    replicate_id_col: REQUIRED for any system with repeated measures on the
+    same physical unit across timepoints (in vitro: pass 'BIOREP_ID'). Since
+    each biorep_id splits into one subculture per treatment, grouping by
+    BIOREP_ID within a single treatment arm is exactly grouping by
+    subculture -- so this averages each subculture's repeated timepoint
+    measurements into ONE value before the t-test, giving n = number of
+    independent subcultures, not n = number of subculture-timepoint rows.
+    Skipping this (leaving it None) for a repeated-measures system silently
+    pseudoreplicates: it treats correlated repeated measurements from the
+    same physical unit as if they were independent replicates, which
+    understates the true variance and makes the p-value anti-conservative
+    (falsely confident), not just underpowered. This is the same category of
+    problem 09a's split-plot restricted permutation exists to prevent at the
+    community level -- this function needs the analogous care at the
+    per-taxon level.
+    Leave as None for destructive-sampling systems (in planta) where each row
+    already IS an independent physical unit and no aggregation is needed.
+
+    Only ONE contrast (e.g. Tailocin vs Buffer) since that's the whole point
+    of the collapsed view here -- pass a single (treatment_a, treatment_b)
+    tuple, not a list.
+
+    Returns a results df: background, taxon, contrast, estimate, ci_low,
+    ci_high, p_value, q_value, significant, n_a, n_b (n_a/n_b are counts of
+    independent replicates actually tested, i.e. subcultures when
+    replicate_id_col is given, not raw rows) -- FDR corrected across this
+    collapsed family only (backgrounds x taxa), separate from any
+    timepoint-resolved family computed elsewhere.
+    """
+    treat_a, treat_b = contrast
+    rows = []
+    taxa = sorted(clr_long['taxon'].unique())
+
+    for bg in backgrounds:
+        grp = clr_long[clr_long[background_col] == bg]
+        for taxon in taxa:
+            tsub = grp[grp['taxon'] == taxon]
+            clr_basis = tsub['clr_basis'].iloc[0] if 'clr_basis' in tsub.columns and len(tsub) > 0 else 'standard'
+
+            def get_group_values(treat):
+                sub = tsub[tsub[treatment_col] == treat]
+                if replicate_id_col and replicate_id_col in sub.columns:
+                    # collapse each independent unit's repeated timepoint
+                    # rows to one mean CLR value BEFORE testing
+                    return sub.groupby(replicate_id_col)['clr_value'].mean()
+                return sub['clr_value']
+
+            a = get_group_values(treat_a)
+            b = get_group_values(treat_b)
+            est, lo, hi, p = welch_ttest_ci(a, b)
+            rows.append({
+                'background': bg, 'taxon': taxon,
+                'contrast': f'{treat_a} - {treat_b}',
+                'clr_basis': clr_basis,
+                'n_a': len(a), 'n_b': len(b),
+                'estimate': est, 'ci_low': lo, 'ci_high': hi, 'p_value': p,
+            })
+
+    results = pd.DataFrame(rows)
+    valid = results['p_value'].notna()
+    results['q_value'] = np.nan
+    results.loc[valid, 'q_value'] = bh_fdr(results.loc[valid, 'p_value'].values)
+    results['significant'] = results['q_value'] < 0.05
+    return results
+
+
+def plot_effects_collapsed(results, title, out_path, taxon_order=None):
+    """One row of panels (no timepoint facet), one column per background,
+    single contrast, no dodge needed since there's only one series per row."""
+    backgrounds = list(dict.fromkeys(results['background']))  # preserve order
+
+    all_taxa = sorted(results['taxon'].unique())
+    if taxon_order is None:
+        ordered = [t for t in TAXON_ORDER_PREFERRED if t in all_taxa]
+        ordered += [t for t in all_taxa if t not in ordered]
+        taxon_order = ordered
+    y_pos = {t: i for i, t in enumerate(taxon_order)}
+    n_taxa = len(taxon_order)
+
+    n_cols = len(backgrounds)
+    fig, axes = plt.subplots(1, n_cols, figsize=(2.8 * n_cols, 0.45 * n_taxa + 1.2), squeeze=False)
+    axes = axes[0]
+
+    finite_vals = pd.concat([results['ci_low'], results['ci_high'], results['estimate']]).dropna()
+    if len(finite_vals) > 0:
+        xpad = 0.08 * (finite_vals.max() - finite_vals.min() + 1e-9)
+        xlim = (finite_vals.min() - xpad, finite_vals.max() + xpad)
+    else:
+        xlim = (-1, 1)
+
+    color = CONTRAST_COLORS[0]
+    for c, bg in enumerate(backgrounds):
+        ax = axes[c]
+        cell = results[results['background'] == bg]
+        for _, row in cell.iterrows():
+            if row['taxon'] not in y_pos or pd.isna(row['estimate']):
+                continue
+            y = y_pos[row['taxon']]
+            ax.plot([row['ci_low'], row['ci_high']], [y, y], color=color, linewidth=1.4, zorder=2)
+            facecolor = color if row['significant'] else 'white'
+            ax.scatter([row['estimate']], [y], color=color, facecolor=facecolor,
+                       edgecolor=color, s=28, zorder=3, linewidth=1.1)
+
+        ax.axvline(0, color='gray', linewidth=0.8, linestyle='--', zorder=1)
+        ax.set_yticks(range(n_taxa))
+        ax.set_yticklabels(taxon_order, fontsize=8)
+        ax.tick_params(axis='y', labelleft=(c == 0))
+        ax.tick_params(axis='x', labelsize=8)
+        ax.set_xlim(xlim)
+        ax.set_ylim(-0.5, n_taxa - 0.5)
+        ax.invert_yaxis()
+        ax.set_title(bg, fontsize=10)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    fig.text(0.5, -0.06, 'Estimated CLR effect, all timepoints pooled (contrast ± 95% CI)',
+              ha='center', fontsize=10)
+    contrast_label = results['contrast'].iloc[0] if len(results) else ''
+    handles = [plt.Line2D([0], [0], color=color, marker='o', markerfacecolor=color,
+                           linestyle='-', label=contrast_label),
+               plt.Line2D([0], [0], color='gray', marker='o', markerfacecolor='gray',
+                          linestyle='none', label='FDR < 0.05 (solid)'),
+               plt.Line2D([0], [0], color='gray', marker='o', markerfacecolor='white',
+                          linestyle='none', label='n.s. (hollow)')]
+    fig.legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, -0.1),
+               ncol=3, fontsize=8, frameon=False)
+    fig.suptitle(title, fontsize=12, y=1.03)
+    fig.tight_layout(rect=[0, 0.07, 1, 0.96])
+    fig.savefig(out_path, bbox_inches='tight', dpi=150)
+    plt.close(fig)
+    print(f'  wrote {out_path}')
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--clr-invitro', required=True)
     p.add_argument('--clr-inplanta-trial2', required=True)
     p.add_argument('--output-dir', required=True)
+    p.add_argument('--skip-supplemental-plot', action='store_true',
+                    help="Only produce the main (Tailocin-Buffer only) plot; skip the "
+                         "supplemental plot with delTFA/TFA also drawn. The results CSV "
+                         "always includes both contrasts either way.")
     args = p.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -255,10 +421,33 @@ def main():
         clr_iv, background_col='community_background', time_col='timepoint',
         treatment_col='treatment', backgrounds=['S1', 'S1+C2'], contrasts=contrasts_iv,
     )
+    # NOTE: q-values in this CSV are computed across ALL contrasts together (see
+    # compute_effects docstring) -- if you later drop delTFA from the analysis
+    # entirely rather than just from the main plot, rerun rather than filtering
+    # this CSV, since the FDR family size would otherwise be wrong.
     results_iv.to_csv(os.path.join(args.output_dir, 'invitro_tailocin_effects.csv'), index=False)
-    plot_effects(results_iv, contrasts_iv,
-                 'In vitro: estimated tailocin effect per member',
-                 os.path.join(args.output_dir, 'invitro_tailocin_effect_plot.pdf'))
+    plot_effects(results_iv, [contrasts_iv[0]],
+                 'In vitro: estimated tailocin effect per member (Tailocin vs Buffer)',
+                 os.path.join(args.output_dir, 'invitro_tailocin_effect_plot_main.pdf'))
+    if not args.skip_supplemental_plot:
+        plot_effects(results_iv, contrasts_iv,
+                     'In vitro: estimated tailocin effect per member (supplemental: + delTFA)',
+                     os.path.join(args.output_dir, 'invitro_tailocin_effect_plot_supplemental.pdf'))
+
+    # collapsed-across-timepoints view -- Tailocin vs Buffer only, one overall
+    # estimate per member per background instead of one per timepoint.
+    # replicate_id_col='BIOREP_ID' is REQUIRED here, not optional: in vitro is
+    # repeated-measures (each subculture sampled non-destructively across all
+    # 4 timepoints), so without this the t-test would pseudoreplicate --
+    # see compute_effects_collapsed()'s docstring.
+    results_iv_collapsed = compute_effects_collapsed(
+        clr_iv, background_col='community_background', treatment_col='treatment',
+        backgrounds=['S1', 'S1+C2'], contrast=contrasts_iv[0], replicate_id_col='BIOREP_ID',
+    )
+    results_iv_collapsed.to_csv(os.path.join(args.output_dir, 'invitro_tailocin_effects_collapsed.csv'), index=False)
+    plot_effects_collapsed(results_iv_collapsed,
+                            'In vitro: overall tailocin effect per member (all timepoints pooled)',
+                            os.path.join(args.output_dir, 'invitro_tailocin_effect_plot_collapsed.pdf'))
 
     # --- in planta trial 2 ---
     print('in planta trial 2')
@@ -272,9 +461,25 @@ def main():
         treatment_col='treatment', backgrounds=['SynCom1', 'SynCom1C'], contrasts=contrasts_ip,
     )
     results_ip.to_csv(os.path.join(args.output_dir, 'inplanta_trial2_tailocin_effects.csv'), index=False)
-    plot_effects(results_ip, contrasts_ip,
-                 'In planta trial 2: estimated tailocin effect per member',
-                 os.path.join(args.output_dir, 'inplanta_trial2_tailocin_effect_plot.pdf'))
+    plot_effects(results_ip, [contrasts_ip[0]],
+                 'In planta trial 2: estimated tailocin effect per member (Tailocin vs Buffer)',
+                 os.path.join(args.output_dir, 'inplanta_trial2_tailocin_effect_plot_main.pdf'))
+    if not args.skip_supplemental_plot:
+        plot_effects(results_ip, contrasts_ip,
+                     'In planta trial 2: estimated tailocin effect per member (supplemental: + TFA)',
+                     os.path.join(args.output_dir, 'inplanta_trial2_tailocin_effect_plot_supplemental.pdf'))
+
+    # NOTE: no replicate_id_col here (unlike in vitro) -- in planta trial 2 is
+    # destructive sampling, each row is already an independent seedling, no
+    # repeated-measures aggregation needed before pooling across dpi.
+    results_ip_collapsed = compute_effects_collapsed(
+        clr_ip, background_col='community_background', treatment_col='treatment',
+        backgrounds=['SynCom1', 'SynCom1C'], contrast=contrasts_ip[0],
+    )
+    results_ip_collapsed.to_csv(os.path.join(args.output_dir, 'inplanta_trial2_tailocin_effects_collapsed.csv'), index=False)
+    plot_effects_collapsed(results_ip_collapsed,
+                            'In planta trial 2: overall tailocin effect per member (all dpi pooled)',
+                            os.path.join(args.output_dir, 'inplanta_trial2_tailocin_effect_plot_collapsed.pdf'))
 
     print(f'\nDone. Outputs in {args.output_dir}/')
 
