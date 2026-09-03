@@ -83,6 +83,17 @@ TAXON_ORDER_PREFERRED = ['Leaf21', 'Leaf234', 'Leaf59', 'Leaf233', 'Leaf179',
 
 CONTRAST_COLORS = {0: '#1f77b4', 1: '#d62728'}  # contrast index -> color
 
+# p25C2 exclusion rule: p25C2 was only ever actually inoculated into the
+# "+C2"/"C" variant of each system's community. It must be excluded from
+# every OTHER background's results even when amplicon reads assigned to
+# p25C2 show up there anyway (e.g. index-hopping, or edit-distance overlap
+# with Leaf59 -- see project notes on the two being nearly identical in the
+# amplicon window). This is a hard exclusion, not the flag-based fading used
+# for contamination-floor taxa elsewhere in this script: presence of reads
+# doesn't mean presence in the design, and no fade/significance call should
+# ever be computed for it in these backgrounds in the first place.
+P25C2_INOCULATED_BACKGROUNDS = {'S1+C2', 'SynCom1C'}
+
 
 def bh_fdr(pvals):
     """Benjamini-Hochberg FDR correction. Returns array of q-values, same
@@ -141,9 +152,23 @@ def compute_effects(clr_long, background_col, time_col, treatment_col,
     for bg in backgrounds:
         for tp in timepoints:
             grp = clr_long[(clr_long[background_col] == bg) & (clr_long[time_col] == tp)]
-            for taxon in taxa:
+            # Hard exclusion, not a data-driven skip: p25C2 is dropped for
+            # any background it was never inoculated into, regardless of
+            # whether reads assigned to it happen to be present in this
+            # group (see P25C2_INOCULATED_BACKGROUNDS above).
+            taxa_this_bg = [t for t in taxa if not (t == 'p25C2' and bg not in P25C2_INOCULATED_BACKGROUNDS)]
+            for taxon in taxa_this_bg:
                 tsub = grp[grp['taxon'] == taxon]
                 clr_basis = tsub['clr_basis'].iloc[0] if 'clr_basis' in tsub.columns and len(tsub) > 0 else 'standard'
+                # Single combined flag channel (per "one flag channel, not
+                # redundant dual encoding"): low_confidence_flag is treated
+                # as the already-collapsed summary of low_prevalence_flag /
+                # below_noise_floor_flag upstream in 07_clr_transform.py's
+                # output. Assumed constant within a (background, timepoint,
+                # taxon) group, same assumption already made for clr_basis
+                # above -- if that's ever not true, this silently takes
+                # whichever row happens to be first.
+                flagged = bool(tsub['low_confidence_flag'].iloc[0]) if 'low_confidence_flag' in tsub.columns and len(tsub) > 0 else False
                 for treat_a, treat_b in contrasts:
                     a = tsub[tsub[treatment_col] == treat_a]['clr_value']
                     b = tsub[tsub[treatment_col] == treat_b]['clr_value']
@@ -152,6 +177,7 @@ def compute_effects(clr_long, background_col, time_col, treatment_col,
                         'background': bg, 'timepoint': tp, 'taxon': taxon,
                         'contrast': f'{treat_a} - {treat_b}',
                         'clr_basis': clr_basis,
+                        'flagged': flagged,
                         'n_a': len(a), 'n_b': len(b),
                         'estimate': est, 'ci_low': lo, 'ci_high': hi, 'p_value': p,
                     })
@@ -175,7 +201,15 @@ def plot_effects(results, contrasts_to_plot, title, out_path, taxon_order=None):
     backgrounds = list(dict.fromkeys(results['background']))  # preserve order
     timepoints = sorted(results['timepoint'].unique(), key=numeric_sort_key)
 
-    all_taxa = sorted(results['taxon'].unique())
+    # Only list taxa that actually have a computed estimate somewhere in this
+    # results df -- a taxon present in the input rows but with an all-NaN
+    # estimate (e.g. p25C2 tested against a background it was never
+    # inoculated into, so welch_ttest_ci got empty groups both sides) has
+    # nothing to plot and would otherwise leave a labeled row with no point.
+    # This matters most for single-background/single-timepoint calls (the
+    # standalone main-figure panels), where there's no other row/column in
+    # the same figure that might legitimately have data for that taxon.
+    all_taxa = sorted(results.loc[results['estimate'].notna(), 'taxon'].unique())
     if taxon_order is None:
         ordered = [t for t in TAXON_ORDER_PREFERRED if t in all_taxa]
         ordered += [t for t in all_taxa if t not in ordered]
@@ -217,11 +251,17 @@ def plot_effects(results, contrasts_to_plot, title, out_path, taxon_order=None):
                     if row['taxon'] not in y_pos or pd.isna(row['estimate']):
                         continue
                     y = y_pos[row['taxon']] + offset
+                    # Fading is the single visual channel for the
+                    # low_confidence_flag (contamination-floor/low-prevalence
+                    # taxa) -- deliberately separate from the
+                    # solid-vs-hollow fill that already encodes FDR
+                    # significance, so the two aren't conflated.
+                    point_alpha = 0.35 if row.get('flagged', False) else 1.0
                     ax.plot([row['ci_low'], row['ci_high']], [y, y],
-                            color=color, linewidth=1.2, zorder=2)
+                            color=color, linewidth=1.2, zorder=2, alpha=point_alpha)
                     facecolor = color if row['significant'] else 'white'
                     ax.scatter([row['estimate']], [y], color=color, facecolor=facecolor,
-                               edgecolor=color, s=22, zorder=3, linewidth=1.0)
+                               edgecolor=color, s=22, zorder=3, linewidth=1.0, alpha=point_alpha)
 
             ax.axvline(0, color='gray', linewidth=0.8, linestyle='--', zorder=1)
             ax.set_yticks(range(n_taxa))
@@ -250,6 +290,8 @@ def plot_effects(results, contrasts_to_plot, title, out_path, taxon_order=None):
                                linestyle='none', label='FDR < 0.05 (solid)'))
     handles.append(plt.Line2D([0], [0], color='gray', marker='o', markerfacecolor='white',
                                linestyle='none', label='n.s. (hollow)'))
+    handles.append(plt.Line2D([0], [0], color='gray', marker='o', markerfacecolor='gray',
+                               linestyle='none', alpha=0.35, label='low-confidence taxon (faded)'))
     fig.legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, -0.11),
                ncol=2, fontsize=8, frameon=False)
     fig.suptitle(title, fontsize=12, y=1.02)
@@ -303,9 +345,13 @@ def compute_effects_collapsed(clr_long, background_col, treatment_col, backgroun
 
     for bg in backgrounds:
         grp = clr_long[clr_long[background_col] == bg]
-        for taxon in taxa:
+        # Same hard exclusion as compute_effects() -- see
+        # P25C2_INOCULATED_BACKGROUNDS above.
+        taxa_this_bg = [t for t in taxa if not (t == 'p25C2' and bg not in P25C2_INOCULATED_BACKGROUNDS)]
+        for taxon in taxa_this_bg:
             tsub = grp[grp['taxon'] == taxon]
             clr_basis = tsub['clr_basis'].iloc[0] if 'clr_basis' in tsub.columns and len(tsub) > 0 else 'standard'
+            flagged = bool(tsub['low_confidence_flag'].iloc[0]) if 'low_confidence_flag' in tsub.columns and len(tsub) > 0 else False
 
             def get_group_values(treat):
                 sub = tsub[tsub[treatment_col] == treat]
@@ -322,6 +368,7 @@ def compute_effects_collapsed(clr_long, background_col, treatment_col, backgroun
                 'background': bg, 'taxon': taxon,
                 'contrast': f'{treat_a} - {treat_b}',
                 'clr_basis': clr_basis,
+                'flagged': flagged,
                 'n_a': len(a), 'n_b': len(b),
                 'estimate': est, 'ci_low': lo, 'ci_high': hi, 'p_value': p,
             })
@@ -339,7 +386,10 @@ def plot_effects_collapsed(results, title, out_path, taxon_order=None):
     single contrast, no dodge needed since there's only one series per row."""
     backgrounds = list(dict.fromkeys(results['background']))  # preserve order
 
-    all_taxa = sorted(results['taxon'].unique())
+    # Same reasoning as in plot_effects(): drop taxa with an all-NaN estimate
+    # (never actually tested for this background, e.g. p25C2 in S1/SynCom1)
+    # rather than leaving a labeled row with no point.
+    all_taxa = sorted(results.loc[results['estimate'].notna(), 'taxon'].unique())
     if taxon_order is None:
         ordered = [t for t in TAXON_ORDER_PREFERRED if t in all_taxa]
         ordered += [t for t in all_taxa if t not in ordered]
@@ -366,10 +416,11 @@ def plot_effects_collapsed(results, title, out_path, taxon_order=None):
             if row['taxon'] not in y_pos or pd.isna(row['estimate']):
                 continue
             y = y_pos[row['taxon']]
-            ax.plot([row['ci_low'], row['ci_high']], [y, y], color=color, linewidth=1.4, zorder=2)
+            point_alpha = 0.35 if row.get('flagged', False) else 1.0
+            ax.plot([row['ci_low'], row['ci_high']], [y, y], color=color, linewidth=1.4, zorder=2, alpha=point_alpha)
             facecolor = color if row['significant'] else 'white'
             ax.scatter([row['estimate']], [y], color=color, facecolor=facecolor,
-                       edgecolor=color, s=28, zorder=3, linewidth=1.1)
+                       edgecolor=color, s=28, zorder=3, linewidth=1.1, alpha=point_alpha)
 
         ax.axvline(0, color='gray', linewidth=0.8, linestyle='--', zorder=1)
         ax.set_yticks(range(n_taxa))
@@ -391,7 +442,9 @@ def plot_effects_collapsed(results, title, out_path, taxon_order=None):
                plt.Line2D([0], [0], color='gray', marker='o', markerfacecolor='gray',
                           linestyle='none', label='FDR < 0.05 (solid)'),
                plt.Line2D([0], [0], color='gray', marker='o', markerfacecolor='white',
-                          linestyle='none', label='n.s. (hollow)')]
+                          linestyle='none', label='n.s. (hollow)'),
+               plt.Line2D([0], [0], color='gray', marker='o', markerfacecolor='gray',
+                          linestyle='none', alpha=0.35, label='low-confidence taxon (faded)')]
     fig.legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, -0.1),
                ncol=3, fontsize=8, frameon=False)
     fig.suptitle(title, fontsize=12, y=1.03)
@@ -399,6 +452,22 @@ def plot_effects_collapsed(results, title, out_path, taxon_order=None):
     fig.savefig(out_path, bbox_inches='tight', dpi=150)
     plt.close(fig)
     print(f'  wrote {out_path}')
+
+
+def find_raw_timepoint(clr_long, time_col, target_numeric):
+    """Find the actual raw value in clr_long[time_col] whose leading numeric
+    portion equals target_numeric (e.g. target_numeric=24 matches a raw value
+    of '24H', 24, '24.0', etc, regardless of exactly how it's stored) -- so
+    callers don't need to know the exact string/dtype used upstream, just the
+    number. Raises if nothing matches, rather than silently filtering to an
+    empty frame."""
+    candidates = [v for v in clr_long[time_col].dropna().unique()
+                  if numeric_sort_key(v) == target_numeric]
+    if not candidates:
+        available = sorted(clr_long[time_col].dropna().unique(), key=numeric_sort_key)
+        raise ValueError(f"No {time_col} value matching {target_numeric} found. "
+                          f"Available values: {available}")
+    return candidates[0]
 
 
 def main():
@@ -480,6 +549,38 @@ def main():
     plot_effects_collapsed(results_ip_collapsed,
                             'In planta trial 2: overall tailocin effect per member (all dpi pooled)',
                             os.path.join(args.output_dir, 'inplanta_trial2_tailocin_effect_plot_collapsed.pdf'))
+
+    # --- standalone single-panel plots for the main manuscript figures ---
+    # In vitro 24H (S1 and S1+C2 separately) and in planta trial 2 3dpi
+    # (SynCom1 and SynCom1C separately) -- one background x one timepoint
+    # each, Tailocin vs Buffer only. These are filtered SLICES of
+    # results_iv/results_ip (the same dataframes the main grid figures are
+    # built from), NOT recomputed -- so estimates, CIs, p-values, q-values,
+    # and significance calls here are identical to the corresponding cell in
+    # the main grid figure (same FDR family: all backgrounds x timepoints x
+    # taxa x both contrasts, for that system). If the desired FDR family
+    # ever changes to "just what's in this one panel", switch back to
+    # computing on a filtered clr_long via compute_effects() instead of
+    # filtering results_iv/results_ip -- but that would give different
+    # q-values than the grid figure, which is deliberately NOT what these
+    # panels do.
+    print('standalone single-panel plots (main figures)')
+
+    tp_24h = find_raw_timepoint(results_iv, 'timepoint', 24)
+    for bg, fname_bg in [('S1', 'S1'), ('S1+C2', 'S1C2')]:
+        sub = results_iv[(results_iv['background'] == bg) & (results_iv['timepoint'] == tp_24h)]
+        sub.to_csv(os.path.join(args.output_dir, f'invitro_{fname_bg}_24H_tailocin_effects.csv'), index=False)
+        plot_effects(sub, [contrasts_iv[0]],
+                     f'In vitro, 24H: estimated tailocin effect per member (Tailocin vs Buffer) -- {bg}',
+                     os.path.join(args.output_dir, f'invitro_{fname_bg}_24H_tailocin_effect_plot.pdf'))
+
+    dpi3 = find_raw_timepoint(results_ip, 'timepoint', 3)
+    for bg in ['SynCom1', 'SynCom1C']:
+        sub = results_ip[(results_ip['background'] == bg) & (results_ip['timepoint'] == dpi3)]
+        sub.to_csv(os.path.join(args.output_dir, f'inplanta_trial2_{bg}_3dpi_tailocin_effects.csv'), index=False)
+        plot_effects(sub, [contrasts_ip[0]],
+                     f'In planta trial 2, 3 dpi: estimated tailocin effect per member (Tailocin vs Buffer) -- {bg}',
+                     os.path.join(args.output_dir, f'inplanta_trial2_{bg}_3dpi_tailocin_effect_plot.pdf'))
 
     print(f'\nDone. Outputs in {args.output_dir}/')
 

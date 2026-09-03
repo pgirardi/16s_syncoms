@@ -58,8 +58,42 @@ import re
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 
-TAXON_COLOR = '#7a3ec2'
+TAXON_COLOR = '#5DA9D9'  # light blue
+
+# Display-label standardization. Keys are the raw values as they actually
+# appear in the metadata/effects CSVs (which differ in vitro vs in planta --
+# e.g. in vitro uses 'S1'/'S1+C2' and 'Buffer'/'delTFA'/'Tailocin', in planta
+# uses 'SynCom1'/'SynCom1C' and 'Buf'/'TFA'/'Tail'). This dict maps every
+# variant to ONE written-out label so figures read consistently regardless
+# of which system the data came from. This ONLY affects what's drawn on the
+# plot (xtick labels, background row labels) -- it never touches the values
+# used to filter/match rows in the metadata or the effects CSV.
+DISPLAY_LABELS = {
+    # community backgrounds
+    'S1': 'SynCom1',
+    'SynCom1': 'SynCom1',
+    'S1+C2': 'SynCom1C',
+    'S1+C': 'SynCom1C',
+    'S1C': 'SynCom1C',
+    'SynCom1C': 'SynCom1C',
+    # treatments
+    'Buf': 'Buffer',
+    'Buffer': 'Buffer',
+    'TFA': 'delTFA',
+    'delTFA': 'delTFA',
+    '\u2206TFA': 'delTFA',
+    'Tail': 'Tailocin',
+    'Tailocin': 'Tailocin',
+}
+
+
+def display_label(val):
+    """Map a raw background/treatment value to its standardized, written-out
+    display label. Falls back to the raw value unchanged if it's not a
+    recognized variant, so unexpected values don't silently vanish."""
+    return DISPLAY_LABELS.get(str(val), str(val))
 
 
 def numeric_sort_key(val):
@@ -111,6 +145,13 @@ def compute_relative_abundance(comm, sample_uids, taxon):
     out['rel_abundance_pct'] = (out['raw_count'] / out['total_reads'] * 100)
     out['detected'] = out['raw_count'] > 0
     return out.reset_index().rename(columns={'index': 'sample_uid'})
+
+
+def percent_tick_formatter(val, pos):
+    """Format an axis value (already on a 0-100 percent scale) as '<num>%',
+    trimming trailing zeros so log-scale ticks like 0.01, 0.1, 1, 10, 100
+    read as 0.01%, 0.1%, 1%, 10%, 100% instead of bare numbers."""
+    return f'{val:g}%'
 
 
 def draw_significance_bracket(ax, x1, x2, y, height, text):
@@ -198,6 +239,9 @@ def plot_taxon_boxplot(rel_df, effects_df, taxon, background_col, time_col, trea
             if log_scale:
                 ax.set_yscale('log')
             ax.set_ylim(ylim_shared)
+            ax.yaxis.set_major_formatter(mticker.FuncFormatter(percent_tick_formatter))
+            if log_scale:
+                ax.yaxis.set_minor_formatter(mticker.NullFormatter())
 
             # significance brackets: nested, contrasts[0] innermost (lowest).
             # Positioned off the SHARED global_max (not this panel's own local
@@ -221,7 +265,8 @@ def plot_taxon_boxplot(rel_df, effects_df, taxon, background_col, time_col, trea
                                            text=label)
 
             ax.set_xticks(range(1, len(treatment_order) + 1))
-            ax.set_xticklabels(treatment_order, rotation=30, ha='right', fontsize=7)
+            ax.set_xticklabels([display_label(t) for t in treatment_order],
+                                rotation=30, ha='right', fontsize=7)
             ax.tick_params(axis='y', labelsize=7, labelleft=(c == 0))
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
@@ -230,10 +275,10 @@ def plot_taxon_boxplot(rel_df, effects_df, taxon, background_col, time_col, trea
                 tp_label = f'{tp:g}' if isinstance(tp, (int, float, np.floating)) else str(tp)
                 ax.set_title(tp_label, fontsize=9)
             if c == n_cols - 1:
-                ax.text(1.05, 0.5, bg, transform=ax.transAxes, fontsize=9,
+                ax.text(1.05, 0.5, display_label(bg), transform=ax.transAxes, fontsize=9,
                         rotation=-90, va='center', ha='left')
             if c == 0:
-                ax.set_ylabel(f'{taxon} relative abundance (%)', fontsize=8)
+                ax.set_ylabel('Target strain relative abundance', fontsize=8)
 
     fig.suptitle(title, fontsize=12, y=1.02)
     fig.tight_layout()
