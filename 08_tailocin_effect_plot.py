@@ -81,7 +81,55 @@ def numeric_sort_key(val):
 TAXON_ORDER_PREFERRED = ['Leaf21', 'Leaf234', 'Leaf59', 'Leaf233', 'Leaf179',
                           'Leaf13', 'Leaf132', 'Leaf201', 'Leaf84', 'p25C2']
 
-CONTRAST_COLORS = {0: '#1f77b4', 1: '#d62728'}  # contrast index -> color
+# --- Styling --------------------------------------------------------------
+# Color encodes the CONTRAST. Each contrast gets a paired dark/light set from
+# NatParksPalettes "DeathValley": the dark color for confident taxa, the
+# light color (at reduced opacity) for low-confidence taxa (low_confidence_flag
+# from 07). Fill (solid vs hollow) still encodes FDR significance; marker
+# shape is kept as a second cue for contrast so the plots stay readable in
+# grayscale / for color-vision deficiency.
+CONTRAST_STYLES = {
+    0: {'dark': '#60485B', 'light': '#B47E83', 'marker': 'o'},  # Tailocin - Buffer
+    1: {'dark': '#132F5B', 'light': '#435F90', 'marker': '^'},  # Tailocin - delTFA/TFA
+}
+LOW_CONFIDENCE_ALPHA = 0.55
+
+
+def point_style(contrast_idx, flagged=False):
+    """(color, alpha, marker) for one point: dark/opaque for confident taxa,
+    light/faded for low-confidence taxa, within the contrast's color pair."""
+    st = CONTRAST_STYLES[contrast_idx % len(CONTRAST_STYLES)]
+    if flagged:
+        return st['light'], LOW_CONFIDENCE_ALPHA, st['marker']
+    return st['dark'], 1.0, st['marker']
+
+
+def legend_handles(contrast_labels):
+    """Legend: per contrast, a confident (dark) and low-confidence (light)
+    entry; then solid/hollow for FDR, drawn in neutral gray."""
+    handles = []
+    for i, lbl in enumerate(contrast_labels):
+        for flagged, suffix in [(False, ''), (True, ' (low-confidence taxon)')]:
+            color, alpha, marker = point_style(i, flagged)
+            handles.append(plt.Line2D([0], [0], color=color, marker=marker, markerfacecolor=color,
+                                      markeredgecolor=color, markersize=8, linestyle='-',
+                                      alpha=alpha, label=lbl + suffix))
+    handles.append(plt.Line2D([0], [0], color='dimgray', marker='o', markerfacecolor='dimgray',
+                              markersize=8, linestyle='none', label='FDR < 0.05 (solid)'))
+    handles.append(plt.Line2D([0], [0], color='dimgray', marker='o', markerfacecolor='white',
+                              markersize=8, linestyle='none', label='n.s. (hollow)'))
+    return handles
+
+# Font sizes -- edit here to rescale every label in every figure at once.
+FONT = {
+    'tick': 11,         # x/y tick labels (taxon names, CLR values)
+    'col_title': 13,    # timepoint/dpi column headers, background titles
+    'row_label': 12,    # background labels on the right edge
+    'axis_label': 13,   # shared x-axis label
+    'legend': 11,
+    'suptitle': 15,
+}
+
 
 # p25C2 exclusion rule: p25C2 was only ever actually inoculated into the
 # "+C2"/"C" variant of each system's community. It must be excluded from
@@ -190,6 +238,7 @@ def compute_effects(clr_long, background_col, time_col, treatment_col,
     return results
 
 
+
 def plot_effects(results, contrasts_to_plot, title, out_path, taxon_order=None):
     """contrasts_to_plot: list of (treatment_a, treatment_b) tuples to actually
     draw -- can be a subset of what's in `results` (e.g. just Tailocin-Buffer
@@ -225,7 +274,7 @@ def plot_effects(results, contrasts_to_plot, title, out_path, taxon_order=None):
     # blank). Instead, ylim is matched manually below and only column-0
     # panels get labelleft=True.
     n_rows, n_cols = len(backgrounds), len(timepoints)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(2.6 * n_cols, 0.45 * n_taxa * n_rows + 1),
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.2 * n_cols + 0.8, 0.55 * n_taxa * n_rows + 1.6),
                               squeeze=False)
 
     # shared x-range across every panel (computed manually since sharex is
@@ -245,29 +294,23 @@ def plot_effects(results, contrasts_to_plot, title, out_path, taxon_order=None):
 
             for ci, clabel in enumerate(contrast_labels):
                 sub = cell[cell['contrast'] == clabel]
-                color = CONTRAST_COLORS[ci % len(CONTRAST_COLORS)]
                 offset = (ci - (len(contrast_labels) - 1) / 2) * dodge
                 for _, row in sub.iterrows():
                     if row['taxon'] not in y_pos or pd.isna(row['estimate']):
                         continue
                     y = y_pos[row['taxon']] + offset
-                    # Fading is the single visual channel for the
-                    # low_confidence_flag (contamination-floor/low-prevalence
-                    # taxa) -- deliberately separate from the
-                    # solid-vs-hollow fill that already encodes FDR
-                    # significance, so the two aren't conflated.
-                    point_alpha = 0.35 if row.get('flagged', False) else 1.0
+                    color, point_alpha, marker = point_style(ci, row.get('flagged', False))
                     ax.plot([row['ci_low'], row['ci_high']], [y, y],
-                            color=color, linewidth=1.2, zorder=2, alpha=point_alpha)
+                            color=color, linewidth=1.8, zorder=2, alpha=point_alpha)
                     facecolor = color if row['significant'] else 'white'
-                    ax.scatter([row['estimate']], [y], color=color, facecolor=facecolor,
-                               edgecolor=color, s=22, zorder=3, linewidth=1.0, alpha=point_alpha)
+                    ax.scatter([row['estimate']], [y], marker=marker, facecolor=facecolor,
+                               edgecolor=color, s=55, zorder=3, linewidth=1.4, alpha=point_alpha)
 
-            ax.axvline(0, color='gray', linewidth=0.8, linestyle='--', zorder=1)
+            ax.axvline(0, color='gray', linewidth=0.9, linestyle='--', zorder=1)
             ax.set_yticks(range(n_taxa))
-            ax.set_yticklabels(taxon_order, fontsize=7)
+            ax.set_yticklabels(taxon_order, fontsize=FONT['tick'])
             ax.tick_params(axis='y', labelleft=(c == 0))
-            ax.tick_params(axis='x', labelsize=7)
+            ax.tick_params(axis='x', labelsize=FONT['tick'])
             ax.set_xlim(xlim)
             ax.set_ylim(-0.5, n_taxa - 0.5)
             ax.invert_yaxis()
@@ -276,26 +319,23 @@ def plot_effects(results, contrasts_to_plot, title, out_path, taxon_order=None):
 
             if r == 0:
                 tp_label = f'{tp:g}' if isinstance(tp, (int, float, np.floating)) else str(tp)
-                ax.set_title(tp_label, fontsize=9)
+                ax.set_title(tp_label, fontsize=FONT['col_title'])
             if c == n_cols - 1:
-                ax.text(1.02, 0.5, bg, transform=ax.transAxes, fontsize=8,
+                ax.text(1.03, 0.5, bg, transform=ax.transAxes, fontsize=FONT['row_label'],
                         rotation=-90, va='center', ha='left')
 
-    fig.text(0.5, -0.06, 'Estimated CLR effect (contrast ± 95% CI)', ha='center', fontsize=10)
+    # Label/legend/title offsets are set in INCHES and converted to figure
+    # fractions, so the spacing stays the same however tall the figure is
+    # (fixed fractions left big gaps on tall multi-row figures).
+    fig_h = fig.get_size_inches()[1]
+    fig.tight_layout(rect=[0, 0, 1, 1])
+    fig.text(0.5, -0.35 / fig_h, 'Estimated CLR effect (contrast ± 95% CI)', ha='center',
+             va='top', fontsize=FONT['axis_label'])
 
-    handles = [plt.Line2D([0], [0], color=CONTRAST_COLORS[i], marker='o',
-                           markerfacecolor=CONTRAST_COLORS[i], linestyle='-', label=lbl)
-               for i, lbl in enumerate(contrast_labels)]
-    handles.append(plt.Line2D([0], [0], color='gray', marker='o', markerfacecolor='gray',
-                               linestyle='none', label='FDR < 0.05 (solid)'))
-    handles.append(plt.Line2D([0], [0], color='gray', marker='o', markerfacecolor='white',
-                               linestyle='none', label='n.s. (hollow)'))
-    handles.append(plt.Line2D([0], [0], color='gray', marker='o', markerfacecolor='gray',
-                               linestyle='none', alpha=0.35, label='low-confidence taxon (faded)'))
-    fig.legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, -0.11),
-               ncol=2, fontsize=8, frameon=False)
-    fig.suptitle(title, fontsize=12, y=1.02)
-    fig.tight_layout(rect=[0, 0.08, 1, 0.97])
+    handles = legend_handles(contrast_labels)
+    fig.legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, -0.75 / fig_h),
+               ncol=len(handles) // 2, fontsize=FONT['legend'], frameon=False)
+    fig.suptitle(title, fontsize=FONT['suptitle'], y=1 + 0.25 / fig_h, va='bottom')
     fig.savefig(out_path, bbox_inches='tight', dpi=150)
     plt.close(fig)
     print(f'  wrote {out_path}')
@@ -381,6 +421,7 @@ def compute_effects_collapsed(clr_long, background_col, treatment_col, backgroun
     return results
 
 
+
 def plot_effects_collapsed(results, title, out_path, taxon_order=None):
     """One row of panels (no timepoint facet), one column per background,
     single contrast, no dodge needed since there's only one series per row."""
@@ -398,7 +439,7 @@ def plot_effects_collapsed(results, title, out_path, taxon_order=None):
     n_taxa = len(taxon_order)
 
     n_cols = len(backgrounds)
-    fig, axes = plt.subplots(1, n_cols, figsize=(2.8 * n_cols, 0.45 * n_taxa + 1.2), squeeze=False)
+    fig, axes = plt.subplots(1, n_cols, figsize=(3.4 * n_cols + 0.8, 0.55 * n_taxa + 1.8), squeeze=False)
     axes = axes[0]
 
     finite_vals = pd.concat([results['ci_low'], results['ci_high'], results['estimate']]).dropna()
@@ -408,7 +449,6 @@ def plot_effects_collapsed(results, title, out_path, taxon_order=None):
     else:
         xlim = (-1, 1)
 
-    color = CONTRAST_COLORS[0]
     for c, bg in enumerate(backgrounds):
         ax = axes[c]
         cell = results[results['background'] == bg]
@@ -416,39 +456,34 @@ def plot_effects_collapsed(results, title, out_path, taxon_order=None):
             if row['taxon'] not in y_pos or pd.isna(row['estimate']):
                 continue
             y = y_pos[row['taxon']]
-            point_alpha = 0.35 if row.get('flagged', False) else 1.0
-            ax.plot([row['ci_low'], row['ci_high']], [y, y], color=color, linewidth=1.4, zorder=2, alpha=point_alpha)
+            color, point_alpha, marker = point_style(0, row.get('flagged', False))
+            ax.plot([row['ci_low'], row['ci_high']], [y, y], color=color, linewidth=2.0,
+                    zorder=2, alpha=point_alpha)
             facecolor = color if row['significant'] else 'white'
-            ax.scatter([row['estimate']], [y], color=color, facecolor=facecolor,
-                       edgecolor=color, s=28, zorder=3, linewidth=1.1, alpha=point_alpha)
+            ax.scatter([row['estimate']], [y], marker=marker, facecolor=facecolor,
+                       edgecolor=color, s=65, zorder=3, linewidth=1.5, alpha=point_alpha)
 
-        ax.axvline(0, color='gray', linewidth=0.8, linestyle='--', zorder=1)
+        ax.axvline(0, color='gray', linewidth=0.9, linestyle='--', zorder=1)
         ax.set_yticks(range(n_taxa))
-        ax.set_yticklabels(taxon_order, fontsize=8)
+        ax.set_yticklabels(taxon_order, fontsize=FONT['tick'])
         ax.tick_params(axis='y', labelleft=(c == 0))
-        ax.tick_params(axis='x', labelsize=8)
+        ax.tick_params(axis='x', labelsize=FONT['tick'])
         ax.set_xlim(xlim)
         ax.set_ylim(-0.5, n_taxa - 0.5)
         ax.invert_yaxis()
-        ax.set_title(bg, fontsize=10)
+        ax.set_title(bg, fontsize=FONT['col_title'])
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
 
-    fig.text(0.5, -0.06, 'Estimated CLR effect, all timepoints pooled (contrast ± 95% CI)',
-              ha='center', fontsize=10)
     contrast_label = results['contrast'].iloc[0] if len(results) else ''
-    handles = [plt.Line2D([0], [0], color=color, marker='o', markerfacecolor=color,
-                           linestyle='-', label=contrast_label),
-               plt.Line2D([0], [0], color='gray', marker='o', markerfacecolor='gray',
-                          linestyle='none', label='FDR < 0.05 (solid)'),
-               plt.Line2D([0], [0], color='gray', marker='o', markerfacecolor='white',
-                          linestyle='none', label='n.s. (hollow)'),
-               plt.Line2D([0], [0], color='gray', marker='o', markerfacecolor='gray',
-                          linestyle='none', alpha=0.35, label='low-confidence taxon (faded)')]
-    fig.legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, -0.1),
-               ncol=3, fontsize=8, frameon=False)
-    fig.suptitle(title, fontsize=12, y=1.03)
-    fig.tight_layout(rect=[0, 0.07, 1, 0.96])
+    fig_h = fig.get_size_inches()[1]
+    fig.tight_layout(rect=[0, 0, 1, 1])
+    fig.text(0.5, -0.35 / fig_h, f'Estimated CLR effect, {contrast_label}, all timepoints pooled (± 95% CI)',
+              ha='center', va='top', fontsize=FONT['axis_label'])
+    handles = legend_handles([contrast_label])
+    fig.legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, -0.75 / fig_h),
+               ncol=len(handles) // 2, fontsize=FONT['legend'], frameon=False)
+    fig.suptitle(title, fontsize=FONT['suptitle'], y=1 + 0.25 / fig_h, va='bottom')
     fig.savefig(out_path, bbox_inches='tight', dpi=150)
     plt.close(fig)
     print(f'  wrote {out_path}')

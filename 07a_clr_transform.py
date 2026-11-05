@@ -38,7 +38,25 @@ Design:
   "low confidence" would be actively misleading: low abundance there is the
   real biological effect, not noise. See run_dual_clr for exactly where this
   exemption is applied.
-- Two criteria feed the flag (a taxon is flagged if EITHER fails):
+- LOW-CONFIDENCE RULE (--low-confidence-rule, default "detection"):
+    detection (DEFAULT, current): per-condition reliable-detection rule
+      after Bai et al. 2015 (Nature 528:364). A taxon is reliably detected
+      if, in EVERY condition (inoculated background x treatment x
+      timepoint/dpi), at least one replicate exceeds --detection-threshold
+      (default 0.001 = 0.1%) relative abundance of the sample's TOTAL reads.
+      Failing in any condition -> low_confidence_flag = True (column
+      below_detection_flag). Only inoculated backgrounds count (in planta
+      Buffer-community plants are ignored), and the dual-CLR taxon is only
+      evaluated in the backgrounds it was inoculated into. Per-condition
+      detail is written to clr_<trial>_detection_by_condition.csv.
+    blank (previous behaviour): the blank-derived criteria below. Kept for
+      comparison; it compares relative abundance in blanks (which are mostly
+      leaked community material) to relative abundance in samples, and was
+      found to flag established members (e.g. Leaf21, Leaf201, Leaf84).
+  The blank-derived columns (low_prevalence_flag, below_noise_floor_flag)
+  are still computed and written under either rule, for transparency.
+- Blank-derived criteria (used for low_confidence_flag only with
+  --low-confidence-rule blank; a taxon is flagged if EITHER fails):
     1. Prevalence: non-zero in >= --prevalence-threshold fraction of samples.
     2. Magnitude: MEDIAN relative abundance (raw count / that sample's TOTAL
        reads, including unassigned), among samples where present, must
@@ -149,10 +167,52 @@ def compute_blank_noise_floor(comm, blank_sample_uids):
     return sub.groupby('taxon')['rel_pct'].median()
 
 
+def compute_detection_flags(comm, meta_cols, background_col, condition_cols,
+                            inoculated_backgrounds, detection_threshold=0.001,
+                            dual_taxon='p25C2', dual_backgrounds=()):
+    """
+    Per-condition reliable-detection rule (after Bai et al. 2015): a taxon
+    passes if, in EVERY condition (one combination of condition_cols, within
+    inoculated backgrounds only), at least one replicate has relative
+    abundance > detection_threshold. Relative abundance uses the sample's
+    TOTAL reads (incl. unassigned), same denominator as everywhere else here.
+    dual_taxon is only evaluated in dual_backgrounds (it was never inoculated
+    elsewhere, so its absence there says nothing about detection).
+
+    Returns (flags, detail):
+      flags  -- Series taxon -> True if NOT reliably detected (fails in >= 1
+                condition)
+      detail -- one row per condition x taxon: n_reps, max_rel_abundance_pct,
+                detected
+    """
+    meta = meta_cols[meta_cols[background_col].isin(inoculated_backgrounds)]
+    sub = comm[comm['sample_uid'].isin(meta['sample_uid'])].copy()
+    sub['taxon'] = sub['strain_or_group'].astype(str).map(relabel)
+    total = sub.groupby('sample_uid')['R2_count'].sum()
+    members = sub[~sub['strain_or_group'].astype(str).str.lower().isin(NON_MEMBER_LABELS)]
+    wide = members.pivot_table(index='sample_uid', columns='taxon', values='R2_count',
+                               aggfunc='sum', fill_value=0)
+    wide = wide.reindex(meta['sample_uid'], fill_value=0)
+    rel = wide.div(total.reindex(wide.index).replace(0, np.nan), axis=0).fillna(0)
+
+    long = rel.reset_index().melt(id_vars='sample_uid', var_name='taxon', value_name='rel')
+    long = long.merge(meta[['sample_uid'] + condition_cols], on='sample_uid', how='left')
+    if dual_taxon:
+        long = long[(long['taxon'] != dual_taxon) | long[background_col].isin(dual_backgrounds)]
+
+    detail = (long.groupby(condition_cols + ['taxon'])
+                  .agg(n_reps=('rel', 'size'), max_rel=('rel', 'max'))
+                  .reset_index())
+    detail['detected'] = detail['max_rel'] > detection_threshold
+    detail['max_rel_abundance_pct'] = detail.pop('max_rel') * 100
+    flags = ~detail.groupby('taxon')['detected'].all()
+    return flags, detail
+
+
 def build_clr(comm, sample_uids, exclude_from_parts=None, prevalence_threshold=0.1,
               blank_noise_floor=None, noise_floor_multiplier=3.0,
               fallback_min_median_relative_abundance=0.0, absolute_margin_pct=1.0,
-              never_flag_taxa=None):
+              never_flag_taxa=None, detection_flag=None):
     """
     comm: long-format df with sample_uid, strain_or_group (raw label), R2_count
     sample_uids: samples to include (already filtered by caller: system,
@@ -241,6 +301,17 @@ def build_clr(comm, sample_uids, exclude_from_parts=None, prevalence_threshold=0
 
     low_confidence_flag = low_prevalence_flag | below_noise_floor_flag
 
+    # Default rule (see module docstring): per-condition detection flag,
+    # computed by the caller via compute_detection_flags() and passed in.
+    # When given, IT defines low_confidence_flag; the blank-derived flags
+    # above are still reported but no longer drive it. A taxon missing from
+    # detection_flag was never observed in any inoculated sample -> flagged.
+    if detection_flag is not None:
+        below_detection_flag = detection_flag.reindex(wide.columns).fillna(True).astype(bool)
+        low_confidence_flag = below_detection_flag.copy()
+    else:
+        below_detection_flag = pd.Series(False, index=wide.columns)
+
     # never_flag_taxa exemption: force flags False regardless of the
     # computed checks -- for the dual-CLR taxon (p25C2), whose expected
     # treatment-driven depletion should never read as a data-quality flag.
@@ -248,15 +319,18 @@ def build_clr(comm, sample_uids, exclude_from_parts=None, prevalence_threshold=0
         if t in low_confidence_flag.index:
             low_prevalence_flag[t] = False
             below_noise_floor_flag[t] = False
+            below_detection_flag[t] = False
             low_confidence_flag[t] = False
 
     flagged = low_confidence_flag[low_confidence_flag].index.tolist()
     if flagged:
         for t in flagged:
             reasons = []
-            if low_prevalence_flag.get(t, False):
+            if detection_flag is not None:
+                reasons.append('not reliably detected (<= detection threshold in every replicate of >= 1 condition)')
+            elif low_prevalence_flag.get(t, False):
                 reasons.append(f'prevalence {prevalence[t]:.1%} < {prevalence_threshold:.0%}')
-            if below_noise_floor_flag.get(t, False):
+            if detection_flag is None and below_noise_floor_flag.get(t, False):
                 reasons.append(f'median {median_rel_when_present[t]:.4f}% when present vs blank floor '
                                 f'{blank_floor_aligned[t]:.4f}% [{threshold_basis.get(t, "n/a")}]')
             print(f'    FLAGGED low_confidence: {t} -- {"; ".join(reasons)}')
@@ -269,6 +343,7 @@ def build_clr(comm, sample_uids, exclude_from_parts=None, prevalence_threshold=0
         'prevalence': prevalence, 'median_when_present_pct': median_rel_when_present,
         'blank_floor_pct': blank_floor_aligned, 'required_threshold_pct': required_threshold,
         'low_prevalence_flag': low_prevalence_flag, 'below_noise_floor_flag': below_noise_floor_flag,
+        'below_detection_flag': below_detection_flag,
         'low_confidence_flag': low_confidence_flag,
     })
 
@@ -286,8 +361,15 @@ def build_clr(comm, sample_uids, exclude_from_parts=None, prevalence_threshold=0
     clr_wide = pd.DataFrame(clr_vals, index=wide.index, columns=wide.columns)
 
     clr_long = clr_wide.reset_index().melt(id_vars='sample_uid', var_name='taxon', value_name='clr_value')
+    # rel_abundance_pct: the actual (not log-ratio) relative abundance per
+    # sample+taxon, carried forward so downstream scripts (e.g. 08's
+    # low-abundance flag) don't need to independently re-derive it from the
+    # raw community CSV -- single source of truth for this number stays here.
+    rel_abund_long = rel_abund.reset_index().melt(id_vars='sample_uid', var_name='taxon', value_name='rel_abundance_pct')
+    clr_long = clr_long.merge(rel_abund_long, on=['sample_uid', 'taxon'], how='left')
     clr_long = clr_long.merge(
-        flag_detail[['low_prevalence_flag', 'below_noise_floor_flag', 'low_confidence_flag']]
+        flag_detail[['low_prevalence_flag', 'below_noise_floor_flag', 'below_detection_flag',
+                     'low_confidence_flag']]
         .reset_index().rename(columns={'index': 'taxon'}),
         on='taxon', how='left')
     return clr_long, coverage, kept_taxa, flag_detail
@@ -335,7 +417,7 @@ def run_dual_clr(comm, sample_uids, meta_cols, dual_backgrounds, dual_taxon,
                   exclude_from_parts, prevalence_threshold, blank_noise_floor,
                   noise_floor_multiplier, fallback_min_median_relative_abundance,
                   absolute_margin_pct, background_col, treatment_col='treatment',
-                  baseline_treatment=None):
+                  baseline_treatment=None, detection_flag=None):
     """
     Runs two CLR passes over the same sample set:
       - standard: dual_taxon included as a part
@@ -386,11 +468,11 @@ def run_dual_clr(comm, sample_uids, meta_cols, dual_backgrounds, dual_taxon,
     standard_long, coverage, kept, flag_detail = build_clr(
         comm, sample_uids, exclude_from_parts, prevalence_threshold,
         blank_noise_floor, noise_floor_multiplier, fallback_min_median_relative_abundance,
-        absolute_margin_pct, never_flag_taxa=never_flag)
+        absolute_margin_pct, never_flag_taxa=never_flag, detection_flag=detection_flag)
     excluded_long, _, kept_excl, flag_detail_excl = build_clr(
         comm, sample_uids, list(exclude_from_parts) + [dual_taxon], prevalence_threshold,
         blank_noise_floor, noise_floor_multiplier, fallback_min_median_relative_abundance,
-        absolute_margin_pct)
+        absolute_margin_pct, detection_flag=detection_flag)
 
     standard_long = standard_long.merge(meta_cols, on='sample_uid', how='left')
     excluded_long = excluded_long.merge(meta_cols, on='sample_uid', how='left')
@@ -419,10 +501,26 @@ def run_dual_clr(comm, sample_uids, meta_cols, dual_backgrounds, dual_taxon,
 
 def run_in_vitro(comm, iv, out_dir, exclude_from_parts, prevalence_threshold,
                   noise_floor_multiplier, fallback_min_median_relative_abundance,
-                  absolute_margin_pct, dual_backgrounds, dual_taxon):
+                  absolute_margin_pct, dual_backgrounds, dual_taxon,
+                  low_conf_rule='detection', detection_threshold=0.001):
     print('  in vitro')
     exp = iv[iv['sample_type'] == 'experimental'].copy()
     exp = exp[exp['sample_uid'].isin(comm['sample_uid'])]
+
+    # sample_type == 'experimental' alone isn't sufficient: STRAIN ==
+    # 'Media Only' and 'Extraction Blank' are technical control wells that
+    # are (mis)labeled sample_type == 'experimental' in this metadata --
+    # NOT the same thing as sample_type == 'extraction_blank' (a separate,
+    # correctly-labeled category used for the noise-floor calculation
+    # below). Left unfiltered, these show up as bogus "communities" with no
+    # real treatment assigned, and crash adonis2 downstream in 09a with a
+    # missing-value error. Keep only the two real inoculated backgrounds.
+    bogus_strain = exp[~exp['STRAIN'].isin(['S1', 'S1+C2'])]
+    if len(bogus_strain) > 0:
+        print(f'    excluding {len(bogus_strain)} rows with sample_type==\'experimental\' but '
+              f'STRAIN not in [S1, S1+C2] (technical control wells, not real communities): '
+              f'{sorted(bogus_strain["STRAIN"].unique())}')
+        exp = exp[exp['STRAIN'].isin(['S1', 'S1+C2'])]
 
     blanks = iv[iv['sample_type'] == 'extraction_blank']
     blanks = blanks[blanks['sample_uid'].isin(comm['sample_uid'])]
@@ -438,11 +536,27 @@ def run_in_vitro(comm, iv, out_dir, exclude_from_parts, prevalence_threshold,
                       'sequencing_plate']].rename(
         columns={'STRAIN': 'community_background', 'TREATMENT': 'treatment'})
 
+    detection_flag = None
+    if low_conf_rule == 'detection':
+        detection_flag, det_detail = compute_detection_flags(
+            comm, meta_cols, 'community_background', ['community_background', 'treatment', 'timepoint'],
+            inoculated_backgrounds=['S1', 'S1+C2'], detection_threshold=detection_threshold,
+            dual_taxon=dual_taxon, dual_backgrounds=dual_backgrounds)
+        det_path = os.path.join(out_dir, 'clr_invitro_detection_by_condition.csv')
+        det_detail.to_csv(det_path, index=False)
+        print(f'    low-confidence rule: per-condition detection (> {detection_threshold*100:g}% in >= 1 '
+              f'replicate of every background x treatment x timepoint condition) -- detail -> {det_path}')
+        nd = sorted(detection_flag[detection_flag].index.tolist())
+        nd_label = [f'{t} (exempt, dual-CLR taxon)' if t == dual_taxon else t for t in nd]
+        print(f'    not reliably detected: {nd_label}')
+    else:
+        print('    low-confidence rule: blank-derived (--low-confidence-rule blank)')
+
     out, standard_full, excluded_full, coverage = run_dual_clr(
         comm, exp['sample_uid'].tolist(), meta_cols, dual_backgrounds, dual_taxon,
         exclude_from_parts, prevalence_threshold, blank_noise_floor, noise_floor_multiplier,
         fallback_min_median_relative_abundance, absolute_margin_pct, background_col='community_background',
-        treatment_col='treatment', baseline_treatment='Buffer')
+        treatment_col='treatment', baseline_treatment='Buffer', detection_flag=detection_flag)
 
     out_path = os.path.join(out_dir, 'clr_invitro_long.csv')
     cov_path = os.path.join(out_dir, 'clr_invitro_part_coverage.csv')
@@ -471,7 +585,8 @@ def run_in_vitro(comm, iv, out_dir, exclude_from_parts, prevalence_threshold,
 
 def run_in_planta(comm, ip, trial, out_dir, exclude_from_parts, prevalence_threshold,
                    noise_floor_multiplier, fallback_min_median_relative_abundance,
-                   absolute_margin_pct, dual_backgrounds, dual_taxon):
+                   absolute_margin_pct, dual_backgrounds, dual_taxon,
+                   low_conf_rule='detection', detection_threshold=0.001):
     print(f'  in planta trial {int(trial)}')
     exp = ip[(ip['sample_type'] == 'experimental') & (ip['trial'] == trial)].copy()
     exp = exp[exp['truly_inoculated'] == True]  # noqa: E712
@@ -498,11 +613,27 @@ def run_in_planta(comm, ip, trial, out_dir, exclude_from_parts, prevalence_thres
         columns={'community': 'community_background', 'growth_plate_raw': 'growth_plate',
                  'collection_plate': 'seq_plate'})
 
+    detection_flag = None
+    if low_conf_rule == 'detection':
+        detection_flag, det_detail = compute_detection_flags(
+            comm, meta_cols, 'community_background', ['community_background', 'treatment', 'dpi'],
+            inoculated_backgrounds=['SynCom1', 'SynCom1C'], detection_threshold=detection_threshold,
+            dual_taxon=dual_taxon, dual_backgrounds=dual_backgrounds)
+        det_path = os.path.join(out_dir, f'clr_inplanta_trial{int(trial)}_detection_by_condition.csv')
+        det_detail.to_csv(det_path, index=False)
+        print(f'    low-confidence rule: per-condition detection (> {detection_threshold*100:g}% in >= 1 '
+              f'replicate of every background x treatment x dpi condition) -- detail -> {det_path}')
+        nd = sorted(detection_flag[detection_flag].index.tolist())
+        nd_label = [f'{t} (exempt, dual-CLR taxon)' if t == dual_taxon else t for t in nd]
+        print(f'    not reliably detected: {nd_label}')
+    else:
+        print('    low-confidence rule: blank-derived (--low-confidence-rule blank)')
+
     out, standard_full, excluded_full, coverage = run_dual_clr(
         comm, exp['sample_uid'].tolist(), meta_cols, dual_backgrounds, dual_taxon,
         exclude_from_parts, prevalence_threshold, blank_noise_floor, noise_floor_multiplier,
         fallback_min_median_relative_abundance, absolute_margin_pct, background_col='community_background',
-        treatment_col='treatment', baseline_treatment='Buf')
+        treatment_col='treatment', baseline_treatment='Buf', detection_flag=detection_flag)
 
     out_path = os.path.join(out_dir, f'clr_inplanta_trial{int(trial)}_long.csv')
     cov_path = os.path.join(out_dir, f'clr_inplanta_trial{int(trial)}_part_coverage.csv')
@@ -558,6 +689,13 @@ def main():
     p.add_argument('--inplanta-dual-clr-backgrounds', nargs='*', default=['SynCom1C'],
                     help="in planta community values that get the dual-CLR treatment. "
                          "Default: SynCom1C. Pass nothing (empty list) to disable.")
+    p.add_argument('--low-confidence-rule', choices=['detection', 'blank'], default='detection',
+                    help="What defines low_confidence_flag. 'detection' (default): per-condition "
+                         "reliable-detection rule after Bai et al. 2015 -- see module docstring. "
+                         "'blank': the previous blank-derived criteria.")
+    p.add_argument('--detection-threshold', type=float, default=0.001,
+                    help="Relative-abundance threshold (fraction) for the detection rule. "
+                         "Default 0.001 (0.1%%, Bai et al. 2015).")
     args = p.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -570,13 +708,16 @@ def main():
     print('Running CLR transform for all trials...')
     run_in_vitro(comm, iv, args.output_dir, args.exclude_from_parts, args.prevalence_threshold,
                  args.blank_noise_floor_multiplier, args.min_median_relative_abundance,
-                 args.absolute_margin_pct, args.invitro_dual_clr_backgrounds, args.dual_clr_taxon)
+                 args.absolute_margin_pct, args.invitro_dual_clr_backgrounds, args.dual_clr_taxon,
+                 args.low_confidence_rule, args.detection_threshold)
     run_in_planta(comm, ip, 1.0, args.output_dir, args.exclude_from_parts, args.prevalence_threshold,
                   args.blank_noise_floor_multiplier, args.min_median_relative_abundance,
-                  args.absolute_margin_pct, args.inplanta_dual_clr_backgrounds, args.dual_clr_taxon)
+                  args.absolute_margin_pct, args.inplanta_dual_clr_backgrounds, args.dual_clr_taxon,
+                  args.low_confidence_rule, args.detection_threshold)
     run_in_planta(comm, ip, 2.0, args.output_dir, args.exclude_from_parts, args.prevalence_threshold,
                   args.blank_noise_floor_multiplier, args.min_median_relative_abundance,
-                  args.absolute_margin_pct, args.inplanta_dual_clr_backgrounds, args.dual_clr_taxon)
+                  args.absolute_margin_pct, args.inplanta_dual_clr_backgrounds, args.dual_clr_taxon,
+                  args.low_confidence_rule, args.detection_threshold)
 
     print(f'\nDone. Outputs in {args.output_dir}/')
 

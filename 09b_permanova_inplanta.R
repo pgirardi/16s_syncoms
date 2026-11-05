@@ -73,6 +73,10 @@
 #   just on a smaller sample set, with its own betadisper and PCA. The
 #   default (no --dpi_subset) still produces the full treatment*dpi analysis
 #   across both dpi values -- both are useful, run both.
+# - NEW: PCA and scree plots are now also saved as vector PDFs alongside the
+#   existing PNGs (ggsave's default pdf device is vector, same convention as
+#   08_tailocin_effect_plot.py's figures) -- see "wrote" lines near the
+#   ggsave() calls below.
 #
 # Inputs : --clr_file <path to a clr_inplanta_trial{1,2}_standard_long.csv or
 #           _p25C2_excluded_long.csv, from 07_clr_transform.py>
@@ -83,7 +87,9 @@
 #          <out_dir>/pca_loadings_planta_<community>[_dpi<N>].csv
 #          <out_dir>/pca_variance_explained_planta_<community>[_dpi<N>].csv
 #          <out_dir>/plots/pca_planta_<community>[_dpi<N>].png
+#          <out_dir>/plots/pca_planta_<community>[_dpi<N>].pdf   (NEW, vector)
 #          <out_dir>/plots/scree_planta_<community>[_dpi<N>].png
+#          <out_dir>/plots/scree_planta_<community>[_dpi<N>].pdf (NEW, vector)
 #
 # Usage:
 #   Rscript 09b_permanova_inplanta.R --clr_file clr_out/clr_inplanta_trial2_standard_long.csv --out_dir permanova_planta_trial2
@@ -104,6 +110,8 @@ opt_list <- list(
               help="If set (e.g. 5), restrict to that single dpi. Default: NA (full analysis across all dpi)."),
   make_option("--communities", type="character", default="SynCom1,SynCom1C",
               help="Comma-separated community_background values to analyze. Default: 'SynCom1,SynCom1C' (excludes Buffer, matching 05b -- see header)."),
+  make_option("--drop_low_confidence_taxa", action="store_true", default=FALSE,
+              help="Drop taxa flagged low_confidence_flag (from 07) and re-center the CLR on the remaining taxa before PERMANOVA/betadisper/PCA. Sensitivity analysis; output files get a _dropLC suffix. Default: keep all taxa."),
   make_option("--seed", type="integer", default=1)
 )
 opt <- parse_args(OptionParser(option_list=opt_list))
@@ -113,6 +121,19 @@ plot_dir <- file.path(opt$out_dir, "plots")
 dir.create(plot_dir, showWarnings=FALSE, recursive=TRUE)
 set.seed(opt$seed)
 
+# Shared treatment palette/label standard -- IDENTICAL in 09a and 09b so
+# Tailocin/delTFA/Buffer render as the same color regardless of which system
+# or script produced the plot. Okabe-Ito colorblind-safe palette (blue /
+# orange / vermillion). drop=FALSE in scale_colour_manual (used below) keeps
+# the mapping fixed even if a given subset happens to be missing one
+# treatment level, rather than reassigning colors to whatever levels are
+# present.
+TREATMENT_COLORS <- c(Buffer="#0072B2", delTFA="#E69F00", Tailocin="#D55E00")
+TREATMENT_LEVELS <- names(TREATMENT_COLORS)
+# in planta uses shorthand treatment codes (Buf/TFA/Tail) -- standardized to
+# the same full names used in vitro so labels/colors line up across systems.
+TREATMENT_RELABEL <- c(Buf="Buffer", TFA="delTFA", Tail="Tailocin")
+
 check_plate_identifiability <- function(samp, plate_col, group_col) {
   tab <- table(samp[[plate_col]], samp[[group_col]])
   informative <- rowSums(tab > 0) > 1
@@ -120,7 +141,37 @@ check_plate_identifiability <- function(samp, plate_col, group_col) {
        n_informative_plates = sum(informative), n_plates = nrow(tab))
 }
 
+# ── optional: drop low-confidence taxa (--drop_low_confidence_taxa) ─────────
+# Dropping columns from an already-computed CLR matrix is NOT enough on its
+# own: every CLR value was centered on the geometric mean of ALL taxa,
+# including the ones being dropped, so the leftover columns are not a valid
+# CLR of the reduced community and their Euclidean distances would be wrong.
+# Re-centering each row on the mean of the RETAINED columns gives exactly the
+# CLR of the subcomposition (clr_S(x)_i = clr(x)_i - mean_{j in S} clr(x)_j),
+# i.e. the same result as recomputing CLR from scratch on only the retained
+# taxa, using the same zero-replaced values.
+drop_low_conf_taxa <- function(clr_mat, flagged) {
+  keep <- setdiff(colnames(clr_mat), flagged)
+  if (length(keep) < 2) stop("--drop_low_confidence_taxa would leave fewer than 2 taxa")
+  sub <- clr_mat[, keep, drop = FALSE]
+  sweep(sub, 1, rowMeans(sub))
+}
+SYSTEM_TAG <- "planta"
+
 clr_long <- read.csv(opt$clr_file, stringsAsFactors=FALSE)
+
+# low_confidence_flag is written by pandas as the strings "True"/"False",
+# which read.csv keeps as CHARACTER -- so `low_confidence_flag == TRUE` is
+# never true and every flagged taxon silently looks unflagged (same bug
+# class as the dropped_flag "== 'True'" regression). Normalize to logical
+# once, here, so every downstream comparison is correct.
+as_flag <- function(x) toupper(trimws(as.character(x))) %in% c("TRUE", "T", "1")
+if ("low_confidence_flag" %in% names(clr_long)) {
+  clr_long$low_confidence_flag <- as_flag(clr_long$low_confidence_flag)
+} else {
+  if (opt$drop_low_confidence_taxa) stop("--drop_low_confidence_taxa set, but --clr_file has no low_confidence_flag column")
+  clr_long$low_confidence_flag <- FALSE
+}
 required_cols <- c("sample_uid","taxon","clr_value","community_background","treatment","dpi")
 missing_cols <- setdiff(required_cols, names(clr_long))
 if (length(missing_cols)) stop("--clr_file is missing required column(s): ", paste(missing_cols, collapse=", "))
@@ -133,6 +184,7 @@ cat("\n")
 
 for (community in communities) {
   suffix <- if (!is.na(opt$dpi_subset)) paste0("_dpi", opt$dpi_subset) else ""
+  if (opt$drop_low_confidence_taxa) suffix <- paste0(suffix, "_dropLC")
   cat("=== in planta |", community, if (!is.na(opt$dpi_subset)) paste0("| dpi=", opt$dpi_subset) else "", "===\n")
 
   sub_long <- clr_long %>% filter(community_background == community)
@@ -146,13 +198,34 @@ for (community in communities) {
   rownames(clr_wide) <- clr_wide$sample_uid
   clr_mat <- as.matrix(clr_wide[, setdiff(colnames(clr_wide), "sample_uid"), drop=FALSE])
 
+  # Informational by default; --drop_low_confidence_taxa removes these and
+  # re-centers the CLR on the remaining taxa (see drop_low_conf_taxa()).
+  taxon_confidence <- sub_long %>% distinct(taxon, low_confidence_flag)
+  flagged_taxa <- taxon_confidence %>% filter(low_confidence_flag == TRUE) %>% pull(taxon)
+  if (length(flagged_taxa) > 0) {
+    cat("  NOTE: taxa flagged low_confidence in this basis (blank-derived QC, from 07):",
+        paste(flagged_taxa, collapse=", "), "\n")
+  }
+  if (opt$drop_low_confidence_taxa && length(flagged_taxa) > 0) {
+    clr_mat <- drop_low_conf_taxa(clr_mat, flagged_taxa)
+    taxon_confidence <- taxon_confidence %>% filter(!taxon %in% flagged_taxa)
+    cat("  --drop_low_confidence_taxa: REMOVED", paste(flagged_taxa, collapse=", "),
+        "-- CLR re-centered on the remaining", ncol(clr_mat), "taxa:",
+        paste(colnames(clr_mat), collapse=", "), "\n")
+    write.csv(data.frame(taxon = flagged_taxa),
+              file.path(opt$out_dir, paste0("dropped_low_confidence_taxa_", SYSTEM_TAG, "_", community, suffix, ".csv")),
+              row.names = FALSE)
+  } else if (opt$drop_low_confidence_taxa) {
+    cat("  --drop_low_confidence_taxa: no flagged taxa in this basis -- nothing dropped\n")
+  }
+
   samp <- sub_long %>%
     distinct(sample_uid, treatment, dpi, collection_well, growth_plate, seq_plate) %>%
     rename(timepoint = dpi)  # kept as `timepoint` internally to match 05b's variable names/plot code
   samp <- samp[match(rownames(clr_mat), samp$sample_uid), ]
   stopifnot(identical(rownames(clr_mat), samp$sample_uid))
 
-  samp$treatment <- factor(samp$treatment)
+  samp$treatment <- factor(recode(as.character(samp$treatment), !!!TREATMENT_RELABEL), levels=TREATMENT_LEVELS)
   samp$timepoint <- factor(samp$timepoint)
   samp$seq_plate <- factor(samp$seq_plate)
   samp$growth_plate <- factor(samp$growth_plate)
@@ -161,6 +234,7 @@ for (community in communities) {
     cat("  SKIP -- insufficient wells/factor levels after filtering\n\n"); next
   }
   d <- vegdist(clr_mat, method="euclidean")
+
 
   if (!is.na(opt$dpi_subset)) {
     mod_treatment <- adonis2(d ~ treatment, data=samp, permutations=opt$n_perm, by="margin")
@@ -230,7 +304,7 @@ for (community in communities) {
 
     saveRDS(list(treatment=mod_treatment, timepoint=mod_timepoint, interaction=mod,
                  growth_plate=mod_growthplate, seq_plate=mod_seqplate, seq_plate_sensitivity=mod_seqplate_sub),
-            file.path(opt$out_dir, paste0("permanova_model_planta_", community, ".rds")))
+            file.path(opt$out_dir, paste0("permanova_model_planta_", community, suffix, ".rds")))
 
     combined <- bind_rows(
       as.data.frame(mod_treatment) %>% rownames_to_column("term") %>% filter(term == "treatment"),
@@ -289,11 +363,14 @@ for (community in communities) {
   var_exp <- 100 * pca$sdev^2 / sum(pca$sdev^2)
   scores <- as.data.frame(pca$x) %>% rownames_to_column("sample_uid") %>% left_join(samp, by="sample_uid")
   write.csv(scores, file.path(opt$out_dir, paste0("pca_scores_planta_", community, suffix, ".csv")), row.names=FALSE)
-  write.csv(as.data.frame(pca$rotation), file.path(opt$out_dir, paste0("pca_loadings_planta_", community, suffix, ".csv")))
+  loadings_df <- as.data.frame(pca$rotation) %>% rownames_to_column("taxon") %>%
+    left_join(taxon_confidence, by="taxon")
+  write.csv(loadings_df, file.path(opt$out_dir, paste0("pca_loadings_planta_", community, suffix, ".csv")), row.names=FALSE)
 
   # NOTE: stat_ellipse() layer REMOVED per request -- points only.
   p <- ggplot(scores, aes(x=PC1, y=PC2, colour=treatment, shape=timepoint)) +
     geom_point(size=2.2, alpha=0.85) +
+    scale_colour_manual(values=TREATMENT_COLORS, drop=FALSE) +
     theme_minimal(base_size=10) +
     labs(title=paste0("Aitchison PCA -- in planta | ", community, if (!is.na(opt$dpi_subset)) paste0(" | dpi ", opt$dpi_subset) else ""),
          subtitle=paste0("PC1 ", round(var_exp[1],1), "%, PC2 ", round(var_exp[2],1), "% of variance."),
@@ -302,6 +379,10 @@ for (community in communities) {
   f_png <- file.path(plot_dir, paste0("pca_planta_", community, suffix, ".png"))
   ggsave(f_png, p, width=8, height=6)
   cat("  wrote", f_png, "\n")
+  # Vector PDF companion -- same convention as 09a and 08_tailocin_effect_plot.py.
+  f_pdf <- file.path(plot_dir, paste0("pca_planta_", community, suffix, ".pdf"))
+  ggsave(f_pdf, p, width=8, height=6, device=cairo_pdf)
+  cat("  wrote", f_pdf, "\n")
 
   scree_df <- tibble(PC = factor(paste0("PC", seq_along(var_exp)), levels=paste0("PC", seq_along(var_exp))),
                       pct_variance = var_exp, cum_pct_variance = cumsum(var_exp))
@@ -318,7 +399,10 @@ for (community in communities) {
          x="Principal component", y="% variance explained")
   f_scree <- file.path(plot_dir, paste0("scree_planta_", community, suffix, ".png"))
   ggsave(f_scree, p_scree, width=8, height=5)
-  cat("  wrote", f_scree, "\n\n")
+  cat("  wrote", f_scree, "\n")
+  f_scree_pdf <- file.path(plot_dir, paste0("scree_planta_", community, suffix, ".pdf"))
+  ggsave(f_scree_pdf, p_scree, width=8, height=5, device=cairo_pdf)
+  cat("  wrote", f_scree_pdf, "\n\n")
 }
 
 cat("Done.\n")
