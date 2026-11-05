@@ -44,10 +44,11 @@ TAXON_ORDER = ['Leaf13', 'Leaf132', 'Leaf179', 'Leaf201', 'Leaf21', 'Leaf233',
                'Leaf234', 'Leaf391', 'Leaf59', 'Leaf84', 'p25C2',
                'Leaf59+p25C2 (ambiguous)', 'Unassigned']
 
-_cmap = plt.get_cmap('tab20')
-COLORS = {t: _cmap(i / len(TAXON_ORDER)) for i, t in enumerate(TAXON_ORDER)}
-COLORS['Unassigned'] = '#B0B0B0'
-COLORS['Leaf59+p25C2 (ambiguous)'] = '#444444'
+# Colors come from taxon_colors.py, shared with 08 so a strain is the same
+# color in every figure: NatParksPalettes "DeathValley" (n = 11, continuous)
+# for the 11 members, neutral grays for Unassigned / ambiguous reads.
+from taxon_colors import taxon_color
+COLORS = {t: taxon_color(t) for t in TAXON_ORDER}
 
 IN_VITRO_TREATMENT_ORDER = ['Buffer', 'delTFA', 'Tailocin']
 IN_PLANTA_TREATMENT_ORDER = ['Buf', 'TFA', 'Tail']

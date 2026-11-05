@@ -58,42 +58,8 @@ import re
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib.ticker as mticker
 
-TAXON_COLOR = '#5DA9D9'  # light blue
-
-# Display-label standardization. Keys are the raw values as they actually
-# appear in the metadata/effects CSVs (which differ in vitro vs in planta --
-# e.g. in vitro uses 'S1'/'S1+C2' and 'Buffer'/'delTFA'/'Tailocin', in planta
-# uses 'SynCom1'/'SynCom1C' and 'Buf'/'TFA'/'Tail'). This dict maps every
-# variant to ONE written-out label so figures read consistently regardless
-# of which system the data came from. This ONLY affects what's drawn on the
-# plot (xtick labels, background row labels) -- it never touches the values
-# used to filter/match rows in the metadata or the effects CSV.
-DISPLAY_LABELS = {
-    # community backgrounds
-    'S1': 'SynCom1',
-    'SynCom1': 'SynCom1',
-    'S1+C2': 'SynCom1C',
-    'S1+C': 'SynCom1C',
-    'S1C': 'SynCom1C',
-    'SynCom1C': 'SynCom1C',
-    # treatments
-    'Buf': 'Buffer',
-    'Buffer': 'Buffer',
-    'TFA': 'delTFA',
-    'delTFA': 'delTFA',
-    '\u2206TFA': 'delTFA',
-    'Tail': 'Tailocin',
-    'Tailocin': 'Tailocin',
-}
-
-
-def display_label(val):
-    """Map a raw background/treatment value to its standardized, written-out
-    display label. Falls back to the raw value unchanged if it's not a
-    recognized variant, so unexpected values don't silently vanish."""
-    return DISPLAY_LABELS.get(str(val), str(val))
+TAXON_COLOR = '#7a3ec2'
 
 
 def numeric_sort_key(val):
@@ -147,13 +113,6 @@ def compute_relative_abundance(comm, sample_uids, taxon):
     return out.reset_index().rename(columns={'index': 'sample_uid'})
 
 
-def percent_tick_formatter(val, pos):
-    """Format an axis value (already on a 0-100 percent scale) as '<num>%',
-    trimming trailing zeros so log-scale ticks like 0.01, 0.1, 1, 10, 100
-    read as 0.01%, 0.1%, 1%, 10%, 100% instead of bare numbers."""
-    return f'{val:g}%'
-
-
 def draw_significance_bracket(ax, x1, x2, y, height, text):
     """Draws a bracket from x1 to x2 at height y (in data coords), with a
     centered label. height controls the tick length down at each end."""
@@ -179,20 +138,12 @@ def plot_taxon_boxplot(rel_df, effects_df, taxon, background_col, time_col, trea
                               figsize=(figsize_per_panel[0] * n_cols, figsize_per_panel[1] * n_rows),
                               squeeze=False)
 
-    # shared y-range across every timepoint panel: compute once from the
-    # WHOLE dataset being plotted (not per-panel), so panels are directly
-    # comparable at a glance and brackets sit at a consistent height instead
-    # of each panel silently rescaling to its own local max.
+    # visual floor for "not detected" (zero-count) points on a log axis --
+    # placed just below the smallest real detected value in the WHOLE
+    # dataset being plotted, so it's a consistent reference across panels
+    # without ever colliding with a genuine low-but-nonzero value.
     positive_vals = rel_df.loc[rel_df['detected'], 'rel_abundance_pct']
     floor = positive_vals.min() / 2 if len(positive_vals) else 0.01
-    global_max = positive_vals.max() if len(positive_vals) else floor * 10
-    n_contrasts = len(contrasts)
-    bracket_headroom = global_max * (1.15 + 0.35 * n_contrasts)  # top bracket + label clearance
-    if log_scale:
-        ylim_shared = (floor * 0.6, bracket_headroom * 1.15)
-    else:
-        pad = global_max * 0.1
-        ylim_shared = (0, bracket_headroom + pad)
 
     rng = np.random.default_rng(0)  # fixed seed -- jitter is reproducible across reruns
 
@@ -238,17 +189,11 @@ def plot_taxon_boxplot(rel_df, effects_df, taxon, background_col, time_col, trea
 
             if log_scale:
                 ax.set_yscale('log')
-            ax.set_ylim(ylim_shared)
-            ax.yaxis.set_major_formatter(mticker.FuncFormatter(percent_tick_formatter))
-            if log_scale:
-                ax.yaxis.set_minor_formatter(mticker.NullFormatter())
 
-            # significance brackets: nested, contrasts[0] innermost (lowest).
-            # Positioned off the SHARED global_max (not this panel's own local
-            # max) so bracket height is consistent across every panel --
-            # comparable at a glance, and never silently drifts because one
-            # panel happens to have a lower ceiling than its neighbors.
-            step = (global_max * 0.35) if log_scale else (global_max * 0.12 + 1e-9)
+            # significance brackets: nested, contrasts[0] innermost (lowest)
+            ymax = cell['rel_abundance_pct'].replace(0, np.nan).max()
+            ymax = ymax if pd.notna(ymax) else floor
+            step = (ymax * 0.35) if log_scale else (ymax * 0.12 + 1e-9)
             for k, (treat_a, treat_b) in enumerate(contrasts):
                 if treat_a not in treatment_order or treat_b not in treatment_order:
                     continue
@@ -259,15 +204,14 @@ def plot_taxon_boxplot(rel_df, effects_df, taxon, background_col, time_col, trea
                 q = erow['q_value'].iloc[0] if len(erow) else np.nan
                 label = significance_stars(q)
                 xa, xb = treatment_order.index(treat_a) + 1, treatment_order.index(treat_b) + 1
-                y_bracket = global_max * (1.15 + 0.35 * k) if log_scale else global_max + step * (k + 1)
+                y_bracket = ymax * (1.15 + 0.35 * k) if log_scale else ymax + step * (k + 1)
                 draw_significance_bracket(ax, min(xa, xb), max(xa, xb), y_bracket,
                                            height=y_bracket * 0.06 if log_scale else step * 0.3,
                                            text=label)
 
             ax.set_xticks(range(1, len(treatment_order) + 1))
-            ax.set_xticklabels([display_label(t) for t in treatment_order],
-                                rotation=30, ha='right', fontsize=7)
-            ax.tick_params(axis='y', labelsize=7, labelleft=(c == 0))
+            ax.set_xticklabels(treatment_order, rotation=30, ha='right', fontsize=7)
+            ax.tick_params(axis='y', labelsize=7)
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
 
@@ -275,10 +219,10 @@ def plot_taxon_boxplot(rel_df, effects_df, taxon, background_col, time_col, trea
                 tp_label = f'{tp:g}' if isinstance(tp, (int, float, np.floating)) else str(tp)
                 ax.set_title(tp_label, fontsize=9)
             if c == n_cols - 1:
-                ax.text(1.05, 0.5, display_label(bg), transform=ax.transAxes, fontsize=9,
+                ax.text(1.05, 0.5, bg, transform=ax.transAxes, fontsize=9,
                         rotation=-90, va='center', ha='left')
             if c == 0:
-                ax.set_ylabel('Target strain relative abundance', fontsize=8)
+                ax.set_ylabel(f'{taxon} relative abundance (%)', fontsize=8)
 
     fig.suptitle(title, fontsize=12, y=1.02)
     fig.tight_layout()
