@@ -1,7 +1,7 @@
 """
 Build master sample metadata for the IN VITRO trial from in_vitro_plate_layout.xlsx.
 
-Design (confirmed with Patricia):
+Design:
 - One 56-well treatment/replicate layout (Sample Metadata sheet, WELL A1-H7) is
   sampled REPEATEDLY (non-destructive -- same physical cultures over time) at
   4 timepoints: 6H, 12H, 18H, 24H.
@@ -14,10 +14,7 @@ Design (confirmed with Patricia):
 - Every plate also has dedicated BLANKS well-columns.
 
 Well-range boundaries below were derived from the merged-cell structure of the
-'Sequencing Plate Layout' sheet and explicitly confirmed with Patricia.
-Cell *content* (monoculture strain IDs, which wells are truly blank) is read
-directly from the sheet at runtime, never hardcoded, to avoid a repeat of the
-CollPlate4-style transcription bug.
+'Sequencing Plate Layout' sheet in the source xlsx
 """
 
 import re

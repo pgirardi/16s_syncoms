@@ -1,6 +1,4 @@
 """
-06b_composition_by_treatment_timepoint.py
-
 Per-replicate composition plots faceted by (treatment/strain-or-community) x
 (timepoint), matching the layout of the existing reference figure
 (plot_replicates_by_treatment.pdf): each cell is a small multiples panel with
@@ -24,7 +22,7 @@ only truly_inoculated == True, since dropped/not-actually-inoculated wells
 would misrepresent the treatment groups they're nominally labeled with.
 
 Usage:
-    python 06b_composition_by_treatment_timepoint.py \
+    python 04b_composition_by_treatment_timepoint.py \
         --community community_strain_abundance.csv \
         --in-vitro-metadata in_vitro_master_metadata.csv \
         --in-planta-metadata in_planta_master_metadata.csv \

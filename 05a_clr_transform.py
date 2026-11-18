@@ -1,10 +1,9 @@
 """
-07_clr_transform.py
+05a_clr_transform.py
 
 CLR (centered log-ratio) transformation of strain-level composition data,
 run separately for each trial (in vitro; in planta trial 1; in planta trial
-2), since they have different experimental designs and different sample
-sets. One invocation produces all three outputs.
+2), since they have different experimental designs and different sample sets
 
 Design:
 - "Unassigned" reads and the ambiguous "59+p25C2" call are NOT included as
@@ -12,32 +11,27 @@ Design:
   so putting them in the composition would treat noise/ambiguity as if it
   were a taxon with its own abundance. They ARE reported in a coverage
   diagnostic (what fraction of each sample's reads are usable as real parts)
-  so a sample that's mostly unassigned doesn't silently get treated as
-  equivalent to one that's mostly resolved.
 - FLAG, DON'T DROP (as of this version): earlier versions of this script
   excluded taxa from the CLR parts entirely if they failed a
-  prevalence/magnitude check. That's now understood to be the wrong move for
-  a KNOWN, deliberately-inoculated synthetic community: you don't need
-  statistical evidence a taxon is "real" when you know for a fact it was
-  added to the inoculum -- that's a design fact, not a hypothesis to test.
-  Dropping a real member also corrupts the CLR geometry for every OTHER
-  taxon too, since the geometric mean is computed over whatever parts remain.
-  So every taxon that appears at all (prevalence > 0) is now KEPT as a CLR
-  part, always -- what changed is that two boolean flag columns
+  prevalence/magnitude check. Dropping a real member also corrupts the CLR geometry 
+  or every OTHER taxon too, since the geometric mean is computed over whatever 
+  parts remain. So every taxon that appears at all (prevalence > 0) is now KEPT
+  as a CLR part, always -- what changed is that two boolean flag columns
   (low_prevalence_flag, below_noise_floor_flag, combined into
-  low_confidence_flag) are carried through into the output CSV instead of
-  silently removing the taxon. Downstream scripts and the manuscript can
-  caveat or exclude on this basis themselves; the CLR computation itself
-  always uses the full, real compositional structure.
+  low_confidence_flag) are carried through into the output CSV. 
+  Downstream scripts and the manuscript can caveat or exclude on this basis themselves; 
+  the CLR computation itself always uses the full, real compositional structure.
+
   EXCEPTION: the dual-CLR taxon (p25C2) is NEVER flagged low_confidence
   (everything is already always kept now, so there's no separate "keep"
-  exemption to make -- just the flag exemption). Its abundance is legitimately, expectedly driven
+  exemption to make. Its abundance is legitimately, expectedly driven
   down by the Tailocin treatment itself -- that's the entire point of the
   experiment, not a sign of an unreliable measurement. Comparing its
   Tailocin-depleted abundance against a contamination floor and flagging it
   "low confidence" would be actively misleading: low abundance there is the
   real biological effect, not noise. See run_dual_clr for exactly where this
   exemption is applied.
+
 - LOW-CONFIDENCE RULE (--low-confidence-rule, default "detection"):
     detection (DEFAULT, current): per-condition reliable-detection rule
       after Bai et al. 2015 (Nature 528:364). A taxon is reliably detected
@@ -49,30 +43,8 @@ Design:
       Buffer-community plants are ignored), and the dual-CLR taxon is only
       evaluated in the backgrounds it was inoculated into. Per-condition
       detail is written to clr_<trial>_detection_by_condition.csv.
-    blank (previous behaviour): the blank-derived criteria below. Kept for
-      comparison; it compares relative abundance in blanks (which are mostly
-      leaked community material) to relative abundance in samples, and was
-      found to flag established members (e.g. Leaf21, Leaf201, Leaf84).
   The blank-derived columns (low_prevalence_flag, below_noise_floor_flag)
   are still computed and written under either rule, for transparency.
-- Blank-derived criteria (used for low_confidence_flag only with
-  --low-confidence-rule blank; a taxon is flagged if EITHER fails):
-    1. Prevalence: non-zero in >= --prevalence-threshold fraction of samples.
-    2. Magnitude: MEDIAN relative abundance (raw count / that sample's TOTAL
-       reads, including unassigned), among samples where present, must
-       clear EITHER --blank-noise-floor-multiplier times that taxon's own
-       median relative abundance in extraction_blank wells for this trial,
-       OR exceed the blank level by at least --absolute-margin-pct
-       percentage points. Both a ratio and an absolute-margin criterion are
-       needed together -- confirmed empirically that a ratio-only version
-       incorrectly penalizes abundant, obviously-real taxa (blank
-       contamination scales with a taxon's true overall abundance, so a
-       dominant taxon can never clear "Nx its own blank level" once it
-       already makes up a large share of the community), while a flat
-       magnitude-only version let a mean-skewed low-abundance taxon (Leaf13)
-       through undetected. MEDIAN (not mean) is used on both sides of this
-       comparison for the same reason it was chosen everywhere else in this
-       pipeline: mean is too sensitive to a handful of high-outlier wells.
     See compute_blank_noise_floor() for why blank-derived and per-taxon
     (not a flat percentage borrowed from natural-community literature):
     extraction blanks in this dataset are NOT clean (median ~12,000-15,000
@@ -114,7 +86,7 @@ relevant metadata columns for downstream modeling/plotting), plus a
 part-coverage diagnostic CSV per trial.
 
 Usage:
-    python 07_clr_transform.py \
+    python 05a_clr_transform.py \
         --community community_strain_abundance.csv \
         --in-vitro-metadata in_vitro_master_metadata.csv \
         --in-planta-metadata in_planta_master_metadata.csv \
@@ -513,7 +485,7 @@ def run_in_vitro(comm, iv, out_dir, exclude_from_parts, prevalence_threshold,
     # NOT the same thing as sample_type == 'extraction_blank' (a separate,
     # correctly-labeled category used for the noise-floor calculation
     # below). Left unfiltered, these show up as bogus "communities" with no
-    # real treatment assigned, and crash adonis2 downstream in 09a with a
+    # real treatment assigned, and crash adonis2 downstream with a
     # missing-value error. Keep only the two real inoculated backgrounds.
     bogus_strain = exp[~exp['STRAIN'].isin(['S1', 'S1+C2'])]
     if len(bogus_strain) > 0:
@@ -567,10 +539,9 @@ def run_in_vitro(comm, iv, out_dir, exclude_from_parts, prevalence_threshold,
     # Single-basis tables (NOT merged/dual) -- these are what PERMANOVA/Aitchison
     # distance work needs: every taxon in the matrix must be on the SAME CLR
     # basis, which the merged dual-basis table above deliberately is not (see
-    # its docstring). standard = all taxa incl. dual_taxon as a part (Fig 3 /
-    # direct-effect basis). {dual_taxon}_excluded = dual_taxon removed from
-    # parts entirely for every sample, not just dual_backgrounds (Fig 4 /
-    # indirect-effect basis, matches the old pipeline's --exclude_suffix run).
+    # its docstring). standard = all taxa incl. dual_taxon as a part. 
+    # {dual_taxon}_excluded = dual_taxon removed from parts entirely for every sample, 
+    # not just dual_backgrounds
     standard_path = os.path.join(out_dir, 'clr_invitro_standard_long.csv')
     excluded_path = os.path.join(out_dir, f'clr_invitro_{dual_taxon}_excluded_long.csv')
     standard_full.to_csv(standard_path, index=False)

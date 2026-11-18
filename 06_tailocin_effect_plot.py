@@ -1,14 +1,14 @@
 """
-08_tailocin_effect_plot.py
+06_tailocin_effect_plot.py
 
 Per-member tailocin effect plot from CLR-transformed data (output of
-07_clr_transform.py): for each community background x timepoint/dpi group,
+05a_clr_transform.py): for each community background x timepoint/dpi group,
 estimate the CLR difference between Tailocin and each comparison treatment
 (Buffer, and the delTFA/TFA structural-mutant control) for every retained
 taxon, with a 95% CI and BH-FDR-corrected significance.
 
-This deliberately does NOT use PERMANOVA (that's the community-level test in
-05a/05b) -- this is a per-member univariate comparison, one Welch's t-test
+This does NOT use PERMANOVA (that's the community-level test in
+07a/07b) -- this is a per-member univariate comparison, one Welch's t-test
 per (background, timepoint, taxon, contrast), matching the "which specific
 members respond to tailocin" question the reference figure is answering.
 
@@ -20,21 +20,19 @@ pare this down to one timepoint, rerun rather than reusing an old q-value --
 the correction is a function of how many tests are in the family.
 
 Currently plots in vitro and in planta trial 2 only (per request) -- trial 1
-CLR output exists (from 07_clr_transform.py) but is not plotted here since
+CLR output exists (from 05a_clr_transform.py) but is not plotted here since
 it wasn't asked for; add a call to plot_effects() with trial 1's CLR file to
 include it later.
 
 NOTE ON CLR BASIS: this script does not itself decide how CLR was computed --
 it just reads whatever's in the clr_value column of the input file. For the
-S1+C2 / SynCom1C backgrounds, 07_clr_transform.py's dual-CLR handling means
+S1+C2 / SynCom1C backgrounds, 05a_clr_transform.py's dual-CLR handling means
 p25C2's clr_value comes from a CLR pass that includes p25C2 as a part, while
 every other taxon's clr_value comes from a separate pass with p25C2 excluded
 from parts. Both live in the same clr_value column, distinguished only by
 the clr_basis column carried through into the results CSV -- so a p25C2 row
 and a Leaf21 row in the same background/timepoint are NOT on the same CLR
-scale as each other. That's intentional (see 07's docstring), but worth
-remembering if you ever want to compare magnitudes across taxa within a
-panel rather than just within a taxon's own row across timepoints/contrasts.
+scale as each other.
 
 Produces, per system, a main plot (Tailocin vs Buffer only -- the comparison
 that actually matters for the figure), a supplemental plot (adds the
@@ -50,7 +48,7 @@ plots) rather than summarizing their per-timepoint results. Use
 the collapsed plot is always produced.
 
 Usage:
-    python 08_tailocin_effect_plot.py \
+    python 06_tailocin_effect_plot.py \
         --clr-invitro clr_out/clr_invitro_long.csv \
         --clr-inplanta-trial2 clr_out/clr_inplanta_trial2_long.csv \
         --output-dir effect_plots \
@@ -85,7 +83,7 @@ TAXON_ORDER_PREFERRED = ['Leaf21', 'Leaf234', 'Leaf59', 'Leaf233', 'Leaf179',
 # Color encodes the CONTRAST. Each contrast gets a paired dark/light set from
 # NatParksPalettes "DeathValley": the dark color for confident taxa, the
 # light color (at reduced opacity) for low-confidence taxa (low_confidence_flag
-# from 07). Fill (solid vs hollow) still encodes FDR significance; marker
+# from 05). Fill (solid vs hollow) still encodes FDR significance; marker
 # shape is kept as a second cue for contrast so the plots stay readable in
 # grayscale / for color-vision deficiency.
 CONTRAST_STYLES = {
@@ -200,22 +198,10 @@ def compute_effects(clr_long, background_col, time_col, treatment_col,
     for bg in backgrounds:
         for tp in timepoints:
             grp = clr_long[(clr_long[background_col] == bg) & (clr_long[time_col] == tp)]
-            # Hard exclusion, not a data-driven skip: p25C2 is dropped for
-            # any background it was never inoculated into, regardless of
-            # whether reads assigned to it happen to be present in this
-            # group (see P25C2_INOCULATED_BACKGROUNDS above).
             taxa_this_bg = [t for t in taxa if not (t == 'p25C2' and bg not in P25C2_INOCULATED_BACKGROUNDS)]
             for taxon in taxa_this_bg:
                 tsub = grp[grp['taxon'] == taxon]
                 clr_basis = tsub['clr_basis'].iloc[0] if 'clr_basis' in tsub.columns and len(tsub) > 0 else 'standard'
-                # Single combined flag channel (per "one flag channel, not
-                # redundant dual encoding"): low_confidence_flag is treated
-                # as the already-collapsed summary of low_prevalence_flag /
-                # below_noise_floor_flag upstream in 07_clr_transform.py's
-                # output. Assumed constant within a (background, timepoint,
-                # taxon) group, same assumption already made for clr_basis
-                # above -- if that's ever not true, this silently takes
-                # whichever row happens to be first.
                 flagged = bool(tsub['low_confidence_flag'].iloc[0]) if 'low_confidence_flag' in tsub.columns and len(tsub) > 0 else False
                 for treat_a, treat_b in contrasts:
                     a = tsub[tsub[treatment_col] == treat_a]['clr_value']
@@ -250,14 +236,6 @@ def plot_effects(results, contrasts_to_plot, title, out_path, taxon_order=None):
     backgrounds = list(dict.fromkeys(results['background']))  # preserve order
     timepoints = sorted(results['timepoint'].unique(), key=numeric_sort_key)
 
-    # Only list taxa that actually have a computed estimate somewhere in this
-    # results df -- a taxon present in the input rows but with an all-NaN
-    # estimate (e.g. p25C2 tested against a background it was never
-    # inoculated into, so welch_ttest_ci got empty groups both sides) has
-    # nothing to plot and would otherwise leave a labeled row with no point.
-    # This matters most for single-background/single-timepoint calls (the
-    # standalone main-figure panels), where there's no other row/column in
-    # the same figure that might legitimately have data for that taxon.
     all_taxa = sorted(results.loc[results['estimate'].notna(), 'taxon'].unique())
     if taxon_order is None:
         ordered = [t for t in TAXON_ORDER_PREFERRED if t in all_taxa]
@@ -266,19 +244,10 @@ def plot_effects(results, contrasts_to_plot, title, out_path, taxon_order=None):
     y_pos = {t: i for i, t in enumerate(taxon_order)}
     n_taxa = len(taxon_order)
 
-    # NOTE: sharey=True is deliberately NOT used here. With shared y-axes,
-    # matplotlib shares the tick-label objects across all subplots in the
-    # row/column group, so the LAST subplot's set_yticklabels() call silently
-    # overwrites the labels on every other subplot sharing that axis --
-    # this cost real debugging time the first pass (every panel came out
-    # blank). Instead, ylim is matched manually below and only column-0
-    # panels get labelleft=True.
     n_rows, n_cols = len(backgrounds), len(timepoints)
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.2 * n_cols + 0.8, 0.55 * n_taxa * n_rows + 1.6),
                               squeeze=False)
 
-    # shared x-range across every panel (computed manually since sharex is
-    # avoided for the same tick-label-sharing reason as sharey above)
     finite_vals = pd.concat([results['ci_low'], results['ci_high'], results['estimate']]).dropna()
     if len(finite_vals) > 0:
         xpad = 0.08 * (finite_vals.max() - finite_vals.min() + 1e-9)
@@ -326,7 +295,6 @@ def plot_effects(results, contrasts_to_plot, title, out_path, taxon_order=None):
 
     # Label/legend/title offsets are set in INCHES and converted to figure
     # fractions, so the spacing stays the same however tall the figure is
-    # (fixed fractions left big gaps on tall multi-row figures).
     fig_h = fig.get_size_inches()[1]
     fig.tight_layout(rect=[0, 0, 1, 1])
     fig.text(0.5, -0.35 / fig_h, 'Estimated CLR effect (contrast ± 95% CI)', ha='center',
@@ -385,8 +353,6 @@ def compute_effects_collapsed(clr_long, background_col, treatment_col, backgroun
 
     for bg in backgrounds:
         grp = clr_long[clr_long[background_col] == bg]
-        # Same hard exclusion as compute_effects() -- see
-        # P25C2_INOCULATED_BACKGROUNDS above.
         taxa_this_bg = [t for t in taxa if not (t == 'p25C2' and bg not in P25C2_INOCULATED_BACKGROUNDS)]
         for taxon in taxa_this_bg:
             tsub = grp[grp['taxon'] == taxon]
@@ -427,9 +393,6 @@ def plot_effects_collapsed(results, title, out_path, taxon_order=None):
     single contrast, no dodge needed since there's only one series per row."""
     backgrounds = list(dict.fromkeys(results['background']))  # preserve order
 
-    # Same reasoning as in plot_effects(): drop taxa with an all-NaN estimate
-    # (never actually tested for this background, e.g. p25C2 in S1/SynCom1)
-    # rather than leaving a labeled row with no point.
     all_taxa = sorted(results.loc[results['estimate'].notna(), 'taxon'].unique())
     if taxon_order is None:
         ordered = [t for t in TAXON_ORDER_PREFERRED if t in all_taxa]
@@ -525,10 +488,6 @@ def main():
         clr_iv, background_col='community_background', time_col='timepoint',
         treatment_col='treatment', backgrounds=['S1', 'S1+C2'], contrasts=contrasts_iv,
     )
-    # NOTE: q-values in this CSV are computed across ALL contrasts together (see
-    # compute_effects docstring) -- if you later drop delTFA from the analysis
-    # entirely rather than just from the main plot, rerun rather than filtering
-    # this CSV, since the FDR family size would otherwise be wrong.
     results_iv.to_csv(os.path.join(args.output_dir, 'invitro_tailocin_effects.csv'), index=False)
     plot_effects(results_iv, [contrasts_iv[0]],
                  'In vitro: estimated tailocin effect per member (Tailocin vs Buffer)',
@@ -538,12 +497,6 @@ def main():
                      'In vitro: estimated tailocin effect per member (supplemental: + delTFA)',
                      os.path.join(args.output_dir, 'invitro_tailocin_effect_plot_supplemental.pdf'))
 
-    # collapsed-across-timepoints view -- Tailocin vs Buffer only, one overall
-    # estimate per member per background instead of one per timepoint.
-    # replicate_id_col='BIOREP_ID' is REQUIRED here, not optional: in vitro is
-    # repeated-measures (each subculture sampled non-destructively across all
-    # 4 timepoints), so without this the t-test would pseudoreplicate --
-    # see compute_effects_collapsed()'s docstring.
     results_iv_collapsed = compute_effects_collapsed(
         clr_iv, background_col='community_background', treatment_col='treatment',
         backgrounds=['S1', 'S1+C2'], contrast=contrasts_iv[0], replicate_id_col='BIOREP_ID',
@@ -573,7 +526,7 @@ def main():
                      'In planta trial 2: estimated tailocin effect per member (supplemental: + TFA)',
                      os.path.join(args.output_dir, 'inplanta_trial2_tailocin_effect_plot_supplemental.pdf'))
 
-    # NOTE: no replicate_id_col here (unlike in vitro) -- in planta trial 2 is
+    # NOTE: no replicate_id_col here (unlike in vitro) -- in planta is
     # destructive sampling, each row is already an independent seedling, no
     # repeated-measures aggregation needed before pooling across dpi.
     results_ip_collapsed = compute_effects_collapsed(
@@ -585,20 +538,6 @@ def main():
                             'In planta trial 2: overall tailocin effect per member (all dpi pooled)',
                             os.path.join(args.output_dir, 'inplanta_trial2_tailocin_effect_plot_collapsed.pdf'))
 
-    # --- standalone single-panel plots for the main manuscript figures ---
-    # In vitro 24H (S1 and S1+C2 separately) and in planta trial 2 3dpi
-    # (SynCom1 and SynCom1C separately) -- one background x one timepoint
-    # each, Tailocin vs Buffer only. These are filtered SLICES of
-    # results_iv/results_ip (the same dataframes the main grid figures are
-    # built from), NOT recomputed -- so estimates, CIs, p-values, q-values,
-    # and significance calls here are identical to the corresponding cell in
-    # the main grid figure (same FDR family: all backgrounds x timepoints x
-    # taxa x both contrasts, for that system). If the desired FDR family
-    # ever changes to "just what's in this one panel", switch back to
-    # computing on a filtered clr_long via compute_effects() instead of
-    # filtering results_iv/results_ip -- but that would give different
-    # q-values than the grid figure, which is deliberately NOT what these
-    # panels do.
     print('standalone single-panel plots (main figures)')
 
     tp_24h = find_raw_timepoint(results_iv, 'timepoint', 24)

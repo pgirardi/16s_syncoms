@@ -13,27 +13,11 @@
 #   Rscript 01_run_dada2.R <master_metadata.csv> <output_dir>
 #
 # Input CSV must have columns: sample_uid, fastq_R1, fastq_R2, primer_pair, seq_run
-# (in_planta_master_metadata.csv and in_vitro_master_metadata.csv both match
-# this schema, so either can be passed directly, or run per-trial and
-# combine at the strain-assignment step.)
-#
-# *** BEFORE RUNNING FOR REAL ***
-# truncLen below is a PLACEHOLDER (0 = no truncation). Inspect quality
-# profiles per demux group first (plotQualityProfile) and set real values --
-# do not run this blind. See inspect_quality_profiles() at the bottom, which
-# writes one PDF per group/direction so you can look before choosing.
+
 
 suppressMessages(library(dada2))
 suppressMessages(library(dplyr))
 
-# ---- Thread count ----
-# multithread=TRUE tells DADA2 to use parallel::detectCores(), which reports
-# the NODE's total physical core count -- NOT how many cores your salloc/srun
-# allocation actually granted you. On a shared compute node that oversubscribes
-# wildly (e.g. allocated 4 cores, node has 64 -> DADA2 forks ~64 workers, SLURM's
-# cgroup limits kill most of them mid-run). Confirmed the hard way: "scheduled
-# cores ... did not deliver results" during a real in planta run.
-# Pull the actual allocation from SLURM's own environment variables instead.
 n_threads <- suppressWarnings(as.integer(Sys.getenv("SLURM_CPUS_PER_TASK", "")))
 if (is.na(n_threads) || n_threads < 1) {
   n_threads <- suppressWarnings(as.integer(Sys.getenv("SLURM_NTASKS", "")))
@@ -55,10 +39,6 @@ metadata_path <- args[1]
 output_dir <- args[2]
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
-# ---- Per-group truncation lengths ----
-# Fill in after inspecting quality profiles (see inspect_quality_profiles()).
-# Falls back to 0 (no truncation) with a loud warning if a group isn't listed --
-# intentionally NOT silently guessing a value for you.
 TRUNC_LEN <- list(
   # "341F3_799F2_run2" = list(R1 = 220, R2 = 200),
 )
@@ -82,9 +62,6 @@ if (length(missing_cols) > 0) {
   stop("Metadata missing required columns: ", paste(missing_cols, collapse = ", "))
 }
 
-# Exclude wells never actually loaded with DNA (kept in metadata for audit
-# trail, but nothing to denoise). Everything else -- experimental, blanks,
-# monocultures, t0 controls -- goes through DADA2 the same way.
 if ("sample_type" %in% colnames(meta)) {
   n_before <- nrow(meta)
   meta <- meta %>% filter(sample_type != "empty")
@@ -109,8 +86,6 @@ run_one_direction <- function(grp, grp_meta, grp_dir, direction) {
   raw_paths <- grp_meta[[fastq_col]]
   sample_uids <- grp_meta$sample_uid
 
-  # Fail loud, not silent: list exactly which files are missing rather than
-  # letting them vanish into a downstream crash or empty result.
   exists_mask <- file.exists(raw_paths)
   if (!all(exists_mask)) {
     missing <- raw_paths[!exists_mask]
@@ -152,9 +127,6 @@ run_one_direction <- function(grp, grp_meta, grp_dir, direction) {
   }
   rownames(filt_out) <- uids
 
-  # KNOWN BUG (prior debugging): when zero reads survive filterAndTrim, no
-  # output file is written but the path remains in filt_paths -- dada()
-  # crashes on the missing file. Guard explicitly rather than let it happen.
   filt_exists <- file.exists(filt_paths)
   if (!all(filt_exists)) {
     cat(sprintf("    %d samples had 0 reads survive filtering, excluding from error learning:\n",
@@ -221,10 +193,6 @@ if (length(read_track_all) > 0) {
   cat("\nNo samples were successfully processed -- read_tracking.csv not written.\n")
 }
 
-
-# ---- Quality profile inspection helper ----
-# Run this FIRST, separately, before setting TRUNC_LEN and running the main
-# script above for real. Not called automatically.
 inspect_quality_profiles <- function(metadata_path, output_dir, n_samples = 6) {
   meta <- read.csv(metadata_path, stringsAsFactors = FALSE)
   if ("sample_type" %in% colnames(meta)) {

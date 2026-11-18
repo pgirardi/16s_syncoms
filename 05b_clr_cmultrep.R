@@ -1,22 +1,22 @@
 #!/usr/bin/env Rscript
 # =============================================================================
-# 07c_clr_cmultrepl.R
+# 05b_clr_cmultrepl.R
 #
 # Recomputes CLR values with Bayesian-multiplicative zero replacement
-# (zCompositions::cmultRepl) instead of 07_clr_transform.py's flat pseudocount
+# (zCompositions::cmultRepl) instead of 05a_clr_transform.py's flat pseudocount
 # (half the smallest non-zero raw count in the pass matrix), so the two can be
 # compared head-to-head.
 #
-# DESIGN: template-driven, not a re-implementation of 07.
-#   Reads an EXISTING 07 output and keeps every row and every column exactly
+# DESIGN: template-driven, not a re-implementation of 05a.
+#   Reads an EXISTING 05a output and keeps every row and every column exactly
 #   as-is (samples, taxa, clr_basis, flags, metadata, rel_abundance_pct) --
 #   only clr_value is swapped. The old value is kept as clr_value_pseudocount.
-#   Output therefore drops straight into 08 / 09a / 09b with no code changes,
+#   Output therefore drops straight into 06 / 07a / 07b with no code changes,
 #   so the statistical design (incl. in vitro restricted permutation) is
 #   identical between the two runs.
 #
-# CLR PASSES -- mirrors 07 exactly. Every pass runs over ALL samples in the
-#   file (07 computes one matrix per trial, not per background):
+# CLR PASSES -- mirrors 05a exactly. Every pass runs over ALL samples in the
+#   file (05a computes one matrix per trial, not per background):
 #     * merged file (has clr_basis column, e.g. clr_invitro_long.csv):
 #         - "standard" pass: parts = every taxon in the file, p25C2 included,
 #           for every sample. Supplies rows with clr_basis 'standard' (e.g.
@@ -27,11 +27,11 @@
 #       clr_invitro_standard_long.csv or clr_invitro_p25C2_excluded_long.csv
 #       -- the ones PERMANOVA should read): one pass, parts = every taxon in
 #       the file.
-#   Parts are always the taxa present in the template (07 already dropped
+#   Parts are always the taxa present in the template (05a already dropped
 #   Unassigned, the ambiguous 59+p25C2 call, and never-observed taxa).
 #
 # BUILT-IN CHECK: before computing anything new, the script recomputes CLR
-#   with 07's OLD rule from the raw counts and compares it with the template's
+#   with 05a's OLD rule from the raw counts and compares it with the template's
 #   clr_value. If they don't match, it stops -- a comparison on a different
 #   basis would not be like-for-like.
 #
@@ -44,14 +44,13 @@
 #
 # Usage (CHPC):
 #   module load R
-#   Rscript 07c_clr_cmultrepl.R \
+#   Rscript 05b_clr_cmultrepl.R \
 #       --template clr_out/clr_invitro_long.csv \
 #       --community community_strain_abundance.csv \
 #       --output clr_out_cmult/clr_invitro_long.csv \
 #       [--method GBM]
-#   Run once per 07 output file you use downstream (merged + single-basis,
-#   for each of in vitro / in planta trial 1 / trial 2). See
-#   run_07c_all.sh for a loop over all of them.
+#   Run once per 05 output file used downstream (merged + single-basis,
+#   for each of in vitro / in planta trial 1 / trial 2)
 # =============================================================================
 
 suppressPackageStartupMessages(library(zCompositions))
@@ -82,7 +81,7 @@ for (col in c("sample_uid", "taxon", "clr_value")) {
   if (!col %in% names(tmpl)) stop("Template is missing column '", col, "'")
 }
 
-# same relabel() as 07_clr_transform.py
+# same relabel() as 05a_clr_transform.py
 relabel <- function(s) {
   s <- trimws(as.character(s))
   ifelse(tolower(s) == "unassigned", "Unassigned",
@@ -134,7 +133,7 @@ for (nm in names(passes)) {
 # ---- zero-replacement rules -------------------------------------------------
 clr <- function(m) { l <- log(m); sweep(l, 1, rowMeans(l)) }
 
-old_rule <- function(x) {             # 07: half the smallest non-zero raw count
+old_rule <- function(x) {             # 05a: half the smallest non-zero raw count
   pc <- min(x[x > 0]) / 2
   x[x == 0] <- pc
   list(values = clr(x), method = "pseudocount_halfmin")
@@ -170,19 +169,19 @@ compute <- function(rule) {
   list(values = vals, method = meth)
 }
 
-# ---- 1. verify the reconstruction against 07's own clr_value -----------------
+# ---- 1. verify the reconstruction against 05a's own clr_value -----------------
 old <- compute(old_rule)
 err <- max(abs(old$values - tmpl$clr_value), na.rm = TRUE)
-cat(sprintf("Reconstruction check (07 rule, half-min raw-count pseudocount): max |diff| = %.3g\n", err))
+cat(sprintf("Reconstruction check (05a rule, half-min raw-count pseudocount): max |diff| = %.3g\n", err))
 if (!is.finite(err) || err > match_tol) {
   worst <- order(-abs(old$values - tmpl$clr_value))[1:min(5, nrow(tmpl))]
   print(data.frame(tmpl[worst, intersect(c("sample_uid", "taxon", "clr_basis"), names(tmpl))],
                    template = tmpl$clr_value[worst], recomputed = old$values[worst]))
-  stop("Could not reproduce 07's clr_value (max |diff| = ", signif(err, 3),
+  stop("Could not reproduce 05a's clr_value (max |diff| = ", signif(err, 3),
        "). Comparison would not be like-for-like -- send this output so the ",
        "reconstruction can be fixed.")
 }
-cat("  -> reproduced 07 exactly.\n")
+cat("  -> reproduced 05a exactly.\n")
 
 # ---- 2. cmultRepl CLR --------------------------------------------------------
 new <- compute(cmult_rule)
