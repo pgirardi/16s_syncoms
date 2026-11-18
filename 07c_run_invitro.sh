@@ -1,8 +1,8 @@
 #!/bin/bash
 # Run the three in vitro PERMANOVA analyses, dropping low-confidence taxa.
 #
-#   bash run_07a_invitro.sh                  # uses clr_out/
-#   bash run_07a_invitro.sh clr_out_cmult    # same runs on the cmultRepl CLR files
+#   bash 07c_run_invitro.sh                  # uses clr_out/
+#   bash 07c_run_invitro.sh clr_out_cmult    # same runs on the cmultRepl CLR files
 #
 # Outputs carry a _dropLC suffix, so they won't overwrite runs made without the flag.
 # To run WITHOUT dropping, set DROP_FLAG="" below.
