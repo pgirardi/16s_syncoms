@@ -2,37 +2,26 @@
 Assign strain identity to community-sample ASVs using the monoculture
 reference built by build_monoculture_reference_fasta.py.
 
-Design (confirmed with Patricia):
+Design:
 - R1 and R2 were denoised INDEPENDENTLY -- an R1 ASV and R2 ASV from the same
   well are NOT linked read-by-read, only at the sample level.
 - R2 is PRIMARY for strain identity: it's the direction with enough SNPs to
   resolve every strain, including Leaf59 vs p25C2 (identical/near-identical
   in the R1 window, 4 distinguishing SNPs in R2).
-- R1 is used as an independent QC cross-check, not as the primary caller:
-  for any strain group R1 can't distinguish (an "ambiguous group"), we verify
-  the R1 combined count for that group roughly matches the sum of the
-  R2-resolved individual strain counts in the same sample -- large mismatches
-  get flagged rather than silently trusted.
+- R1 is used as an independent QC cross-check: for any strain group R1 can't 
+  distinguish (an "ambiguous group"), we verify the R1 combined count for that 
+  group roughly matches the sum of the R2-resolved individual strain counts in
+  the same sample -- large mismatches get flagged
 - Cross-primer-pair matching is valid (confirmed): 341F1-F6 / 799F1-F2 all
   target the same conserved amplicon region, so a reference built from one
   primer pair's reads is comparable to ASVs from any other primer pair after
   trimming.
-- Monoculture wells ARE run through the main assignment pass (not excluded).
-  Yes, the reference itself is built from monoculture reads, so a monoculture
-  well matching its own strain is circular and not informative on its own --
-  but everything OTHER than the dominant strain in that well (off-target
-  contamination, close_match, unassigned) is exactly the kind of signal we
-  want visible in the same table as every other sample, not silently summed
-  away. The self-check below now just reads off the same final_abundance
-  table rather than re-running matching a second time.
 
 Matching: exact sequence match first (reference already includes known
 operon-copy variants). Falls back to closest match within
-FUZZY_MATCH_MAX_DISTANCE for non-exact hits -- flagged as "close_match", not
-silently accepted or discarded, since it could be a real but under-sampled
-variant not captured in the monoculture reference. Anything beyond that
-distance to every reference strain is reported as unassigned rather than
-forced into a guess.
+FUZZY_MATCH_MAX_DISTANCE for non-exact hits -- flagged as "close_match".
+Anything beyond that distance to every reference strain is reported as 
+unassigned rather than forced into a guess.
 
 Usage:
     python assign_strain_identity.py \
@@ -83,12 +72,6 @@ def edit_distance_within(a: str, b: str, max_dist: int) -> int:
     2*max_dist+1 -- instead of the full L x L grid -- turns each comparison
     from O(L^2) into roughly O(L * max_dist), with an immediate length-based
     bailout before any DP at all.
-
-    This matters a lot in practice: benchmarked ~300x faster than the full
-    edit_distance() for unrelated sequences (the common case when matching a
-    real community ASV against a handful of reference strains -- most
-    comparisons ARE unrelated and should bail out fast, not compute a full
-    distance nobody needs).
     """
     la, lb = len(a), len(b)
     if abs(la - lb) > max_dist:
@@ -149,9 +132,7 @@ def match_asv(sequence: str, exact_lookup: dict, all_ref_seqs: list):
     # then collect all strains achieving that minimum (handles ties honestly
     # instead of picking one arbitrarily). Uses the banded distance function
     # (fast bail-out past FUZZY_MATCH_MAX_DISTANCE) since we only need to know
-    # "is this within threshold", not the exact distance for far-away
-    # candidates -- computing full Levenshtein for every unrelated reference
-    # sequence was the actual bottleneck (see edit_distance_within docstring).
+    # "is this within threshold", not the exact distance for far-away candidates
     best_dist = FUZZY_MATCH_MAX_DISTANCE + 1  # sentinel: "nothing within threshold yet"
     best_strains = set()
     for strain, ref_seq in all_ref_seqs:
@@ -182,7 +163,7 @@ def load_and_concat_seqtabs(paths: list) -> pd.DataFrame:
     # group). If it shows up with different ASV sets across files that's
     # fine (expected -- same sample listed once, many ASV rows); but if the
     # exact same (sample_uid, sequence) pair appears more than once across
-    # files, something's duplicated upstream -- surface it, don't silently sum.
+    # files, something's duplicated upstream -- flag
     dupes = combined[combined.duplicated(subset=["sample_uid", "sequence"], keep=False)]
     if len(dupes) > 0:
         raise RuntimeError(
@@ -299,13 +280,7 @@ def main():
     print(f"  R1 reference: {len(allref_r1)} sequences, R2 reference: {len(allref_r2)} sequences")
 
     print("\nLoading metadata...")
-    # dtype=str on STRAIN is deliberate: many STRAIN values are numeric-looking
-    # ('21', '59', ...) and pandas will silently coerce that column to float64
-    # when NaNs are present elsewhere in it (e.g. non-monoculture rows), turning
-    # '21' into 21.0 on read. That breaks the string-based self_match comparison
-    # in the monoculture self-check below exactly the way dropped_flag broke
-    # before -- forcing str here avoids it at the source rather than patching
-    # the comparison later.
+    # dtype=str on STRAIN is deliberate, some strains are numeric IDs
     meta = pd.read_csv(args.metadata, dtype={"STRAIN": str})
     if "sample_type" not in meta.columns:
         raise ValueError("Metadata missing 'sample_type' column")
@@ -374,7 +349,7 @@ def main():
 
     # --- Monoculture self-check summary ---
     # Monoculture wells already went through the exact same R1/R2 pipeline as
-    # every other sample above and are already in final_abundance. This just
+    # every other sample above and are already in final_abundance. This 
     # pulls them back out and summarizes self-match fraction for a quick
     # pipeline sanity check -- it does NOT re-run assign_direction.
     if monoculture_uids:

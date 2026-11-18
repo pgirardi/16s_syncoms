@@ -1,19 +1,11 @@
 #!/usr/bin/env Rscript
 # =============================================================================
-# 09a_permanova_invitro.R
+# 07a_permanova_invitro.R
 #
 # PERMANOVA + betadisper + Aitchison PCA for the IN VITRO trial.
 #
-# Ported from 05a_permanova_invitro.R to consume the current pipeline's CLR
-# output (07_clr_transform.py's long-format CSVs) instead of the old
-# clr_wide_<method>_....rds files. All of the statistical design from 05a is
-# UNCHANGED -- same split-plot restricted permutation, same plate-
-# identifiability checks, same betadisper-per-stratum logic. Only the input
-# format and a few metadata column names changed. See "WHAT CHANGED FROM 05a"
-# below for the specifics.
-#
 # ---------------------------------------------------------------------------
-# SPLIT-PLOT DESIGN (unchanged from 05a -- read this if you haven't seen it)
+# SPLIT-PLOT DESIGN
 # ---------------------------------------------------------------------------
 # The repeatedly-sampled unit is NOT biorep_id alone -- each biorep_id is
 # split into three independently treated sub-cultures (Buffer/delTFA/
@@ -32,70 +24,10 @@
 #
 # Restricted permutation via Plots(strata=...) requires every stratum to have
 # the SAME sub-structure (same set/count of timepoints). If a well was
-# dropped upstream (e.g. by 07's coverage/prevalence filtering), a sub-culture
+# dropped upstream (e.g. by 05's coverage/prevalence filtering), a sub-culture
 # can end up with an incomplete timepoint set. This script detects that
 # automatically and drops any incomplete sub-culture, reporting exactly which
 # ones and why, rather than crashing -- see "enforce balance" below.
-#
-# ---------------------------------------------------------------------------
-# SEQ_PLATE AS A COVARIATE -- read before trusting the plate p-value
-# ---------------------------------------------------------------------------
-# Re-verify this against your actual data with
-# table(meta$sequencing_plate, meta$timepoint) if plate assignments change --
-# it's checked at runtime below (check_plate_identifiability()), not
-# hardcoded, but the STRUCTURE of the confound (which timepoints share a
-# plate) is a property of your specific plate layout and can shift between
-# reruns of 00b_build_master_metadata_invitro.py if the layout sheet changes.
-#
-# ---------------------------------------------------------------------------
-# WHY t0 / CONTROL / MONOCULTURE WELLS AREN'T HERE
-# ---------------------------------------------------------------------------
-# 07_clr_transform.py's in-vitro CLR pass already restricts to
-# sample_type == 'experimental' -- t0, monoculture, and blank wells never
-# appear in the CLR long CSVs this script reads, so there's no equivalent of
-# 05a's --include_t0 flag to carry over. If you want those wells included in
-# a PERMANOVA for some reason, that filtering needs to change in
-# 07_clr_transform.py, not here.
-#
-# ---------------------------------------------------------------------------
-# WHAT CHANGED FROM 05a
-# ---------------------------------------------------------------------------
-# - Input: --clr_file points directly at ONE long-format CSV (sample_uid,
-#   taxon, clr_value, community_background, treatment, timepoint, BIOREP_ID,
-#   well, sequencing_plate) instead of --clr_dir + --method + a wide .rds
-#   per community. Use clr_invitro_standard_long.csv for the full-basis (old
-#   Fig 3) run, or clr_invitro_p25C2_excluded_long.csv for the indirect-
-#   effect (old Fig 4, --exclude_suffix _excl-p25C2) run -- these are NOT
-#   interchangeable with the dual-basis clr_invitro_long.csv used by the
-#   effect-size plot script (08_tailocin_effect_plot.py); that file mixes two
-#   different CLR bases in one table (p25C2 on one basis, everything else on
-#   another) and is NOT valid input for a distance-based test where every
-#   taxon needs to be on the same basis. See 07_clr_transform.py's docstring.
-# - Communities are inferred from community_background values present in the
-#   file (S1, S1+C2) rather than from filenames -- no --exclude_suffix
-#   needed, that's now just "which CLR file did you point --clr_file at."
-# - No --metadata / --exclude_dropped: dropped_flag filtering doesn't apply
-#   to in vitro (no such concept in this design) and isn't needed here.
-# - No --include_t0: see above, t0 was never in the input to begin with.
-# - biorep_id -> BIOREP_ID, treatment -> treatment (unchanged), seq_plate ->
-#   sequencing_plate (column rename only, same meaning).
-# - stat_ellipse() REMOVED from the PCA plot per request -- points only, no
-#   drawn confidence ellipse. betadisper()/permutest() are UNCHANGED and
-#   still run and reported; removing the ellipse is a plotting choice, not a
-#   statistical one, and doesn't touch the dispersion test at all.
-# - NEW: --timepoint_subset lets you rerun the analysis restricted to one
-#   timepoint (e.g. --timepoint_subset 24H) for a "which single timepoint
-#   should the actual figure use" comparison. At a single timepoint each
-#   sub-culture contributes exactly one well, so the split-plot restriction
-#   is moot -- this mode uses ordinary free-permutation adonis2(d~treatment),
-#   still with betadisper (no ellipse) and its own PCA. The default (no
-#   --timepoint_subset) still produces the full split-plot analysis across
-#   all four timepoints, matching 05a's original scope -- both are useful,
-#   run both.
-# - NEW: PCA and scree plots are now also saved as vector PDFs alongside the
-#   existing PNGs (ggsave's default pdf device is vector, same convention as
-#   08_tailocin_effect_plot.py's figures) -- see "wrote" lines near the
-#   ggsave() calls below.
 #
 # Inputs : --clr_file <path to clr_invitro_standard_long.csv or
 #           clr_invitro_p25C2_excluded_long.csv, from 07_clr_transform.py>
@@ -111,9 +43,9 @@
 #          <out_dir>/plots/scree_invitro_<community>[_<timepoint>].pdf (NEW, vector)
 #
 # Usage:
-#   Rscript 09a_permanova_invitro.R --clr_file clr_out/clr_invitro_standard_long.csv --out_dir permanova_invitro
-#   Rscript 09a_permanova_invitro.R --clr_file clr_out/clr_invitro_standard_long.csv --out_dir permanova_invitro --timepoint_subset 24H
-#   Rscript 09a_permanova_invitro.R --clr_file clr_out/clr_invitro_p25C2_excluded_long.csv --out_dir permanova_invitro_excl_p25C2
+#   Rscript 07a_permanova_invitro.R --clr_file clr_out/clr_invitro_standard_long.csv --out_dir permanova_invitro
+#   Rscript 07a_permanova_invitro.R --clr_file clr_out/clr_invitro_standard_long.csv --out_dir permanova_invitro --timepoint_subset 24H
+#   Rscript 07a_permanova_invitro.R --clr_file clr_out/clr_invitro_p25C2_excluded_long.csv --out_dir permanova_invitro_excl_p25C2
 # =============================================================================
 
 suppressPackageStartupMessages({
@@ -141,17 +73,28 @@ plot_dir <- file.path(opt$out_dir, "plots")
 dir.create(plot_dir, showWarnings=FALSE, recursive=TRUE)
 set.seed(opt$seed)
 
-# Shared treatment palette/label standard -- IDENTICAL in 09a and 09b so
+# Shared treatment palette/label standard -- IDENTICAL in 07a and 07b so
 # Tailocin/delTFA/Buffer render as the same color regardless of which system
-# or script produced the plot. Okabe-Ito colorblind-safe palette (blue /
-# orange / vermillion). drop=FALSE in scale_colour_manual (used below) keeps
-# the mapping fixed even if a given subset happens to be missing one
-# treatment level, rather than reassigning colors to whatever levels are
-# present.
-TREATMENT_COLORS <- c(Buffer="#0072B2", delTFA="#E69F00", Tailocin="#D55E00")
+# or script produced the plot. Colors from NatParksPalettes "DeathValley"
+# (the project palette; flagged colorblind-safe in the package), chosen to
+# differ in both hue and lightness: slate blue / gold / dark rust.
+# drop=FALSE in scale_colour_manual (used below) keeps the mapping fixed even
+# if a given subset is missing one treatment level.
+TREATMENT_COLORS <- c(Buffer="#435F90", delTFA="#FEB359", Tailocin="#8C2B0E")
+# Scree plot colors, same palette: bars (individual PC) + line (cumulative).
+SCREE_BAR_COLOR  <- "#B47E83"
+SCREE_LINE_COLOR <- "#132F5B"
+
+FONT <- list(base = 14, axis_text = 12, scree_pc_labels = 10, title = 16, subtitle = 13)
+PLOT_THEME <- theme_minimal(base_size = FONT$base) +
+  theme(axis.text     = element_text(size = FONT$axis_text),
+        legend.text   = element_text(size = FONT$axis_text),
+        legend.title  = element_text(size = FONT$base),
+        plot.title    = element_text(size = FONT$title, face = "bold"),
+        plot.subtitle = element_text(size = FONT$subtitle))
 TREATMENT_LEVELS <- names(TREATMENT_COLORS)
 
-# ── plate identifiability check (unchanged from 05a) ────────────────────────
+# ── plate identifiability check ──────────────────────────────────────
 check_plate_identifiability <- function(samp, plate_col, group_col) {
   tab <- table(samp[[plate_col]], samp[[group_col]])
   informative <- rowSums(tab > 0) > 1
@@ -174,6 +117,7 @@ drop_low_conf_taxa <- function(clr_mat, flagged) {
   sub <- clr_mat[, keep, drop = FALSE]
   sweep(sub, 1, rowMeans(sub))
 }
+P25C2_INOCULATED_BACKGROUNDS <- c("S1+C2", "SynCom1C")
 SYSTEM_TAG <- "invitro"
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -181,11 +125,6 @@ SYSTEM_TAG <- "invitro"
 # ══════════════════════════════════════════════════════════════════════════
 clr_long <- read.csv(opt$clr_file, stringsAsFactors=FALSE)
 
-# low_confidence_flag is written by pandas as the strings "True"/"False",
-# which read.csv keeps as CHARACTER -- so `low_confidence_flag == TRUE` is
-# never true and every flagged taxon silently looks unflagged (same bug
-# class as the dropped_flag "== 'True'" regression). Normalize to logical
-# once, here, so every downstream comparison is correct.
 as_flag <- function(x) toupper(trimws(as.character(x))) %in% c("TRUE", "T", "1")
 if ("low_confidence_flag" %in% names(clr_long)) {
   clr_long$low_confidence_flag <- as_flag(clr_long$low_confidence_flag)
@@ -206,9 +145,6 @@ if (!is.na(opt$timepoint_subset))
 
 # ══════════════════════════════════════════════════════════════════════════
 # 2. One PERMANOVA + betadisper + PCA per community
-#    (S1 and S1+C2 are on different compositional bases whenever --clr_file
-#    is the p25C2-excluded table for S1+C2 wells -- see 07_clr_transform.py's
-#    dual-CLR handling. Always analyzed separately, same as 05a.)
 # ══════════════════════════════════════════════════════════════════════════
 for (community in communities) {
   suffix <- if (!is.na(opt$timepoint_subset)) paste0("_", opt$timepoint_subset) else ""
@@ -227,8 +163,14 @@ for (community in communities) {
   rownames(clr_wide) <- clr_wide$sample_uid
   clr_mat <- as.matrix(clr_wide[, setdiff(colnames(clr_wide), "sample_uid"), drop=FALSE])
 
+  if (!(community %in% P25C2_INOCULATED_BACKGROUNDS) && "p25C2" %in% colnames(clr_mat)) {
+    clr_mat <- drop_low_conf_taxa(clr_mat, "p25C2")
+    cat("  p25C2 removed from parts (never inoculated into", community, ") -- CLR re-centered on",
+        ncol(clr_mat), "taxa\n")
+  }
+
   # Report which taxa in this basis are flagged low_confidence by
-  # 07_clr_transform.py (blank-contamination-derived QC flag -- see that
+  # 05_clr_transform.py (blank-contamination-derived QC flag -- see that
   # script's docstring). By default this is informational only and every
   # taxon stays in the analysis. With --drop_low_confidence_taxa the flagged
   # taxa are removed and the CLR is re-centered on the remaining taxa (a
@@ -236,6 +178,8 @@ for (community in communities) {
   # sensitivity analysis.
   taxon_confidence <- sub_long %>% distinct(taxon, low_confidence_flag)
   flagged_taxa <- taxon_confidence %>% filter(low_confidence_flag == TRUE) %>% pull(taxon)
+  flagged_taxa <- intersect(flagged_taxa, colnames(clr_mat))
+  taxon_confidence <- taxon_confidence %>% filter(taxon %in% colnames(clr_mat))
   if (length(flagged_taxa) > 0) {
     cat("  NOTE: taxa flagged low_confidence in this basis (blank-derived QC, from 07):",
         paste(flagged_taxa, collapse=", "), "\n")
@@ -260,7 +204,9 @@ for (community in communities) {
   stopifnot(identical(rownames(clr_mat), samp$sample_uid))
 
   samp$treatment  <- factor(samp$treatment, levels=TREATMENT_LEVELS)
-  samp$timepoint  <- factor(samp$timepoint)
+  # numeric order (6H, 12H, 18H, 24H), not alphabetical -- affects legend order only, not any test
+  tp_lv <- unique(as.character(samp$timepoint))
+  samp$timepoint  <- factor(samp$timepoint, levels=tp_lv[order(as.numeric(sub("[^0-9.].*$", "", tp_lv)))])
   samp$biorep_id  <- factor(samp$biorep_id)
   samp$seq_plate  <- factor(samp$seq_plate)
   samp$subculture_id <- interaction(samp$biorep_id, samp$treatment, drop=TRUE)
@@ -289,8 +235,7 @@ for (community in communities) {
     disp_h <- opt$n_perm
   } else {
     # ────────────────────────────────────────────────────────────────────
-    # FULL MODE: split-plot restricted permutation across all timepoints,
-    # unchanged from 05a.
+    # FULL MODE: split-plot restricted permutation across all timepoints
     # ────────────────────────────────────────────────────────────────────
     full_tp_set <- levels(samp$timepoint)
     tp_by_sub <- split(as.character(samp$timepoint), samp$subculture_id)
@@ -385,13 +330,6 @@ for (community in communities) {
   }
 
   # ── betadisper: is a significant PERMANOVA a location or spread effect? ──
-  # Kept exactly as in 05a -- this is a statistical test, not a plot element,
-  # and runs regardless of the ellipse being removed from the PCA plot below.
-  # NOTE: previously only per-sample distances were written to file and the
-  # actual F/p from permutest() only went to the console (cat()) -- that
-  # meant the significance test itself wasn't reproducible from the output
-  # files alone. Now also collected into a betadisper_summary_*.csv per
-  # community/suffix, one row per factor.
   betadisper_summary_rows <- list()
   for (fac in disp_facs) {
     bd <- betadisper(d, samp[[fac]], type="centroid")
@@ -424,12 +362,10 @@ for (community in communities) {
     left_join(taxon_confidence, by="taxon")
   write.csv(loadings_df, file.path(opt$out_dir, paste0("pca_loadings_invitro_", community, suffix, ".csv")), row.names=FALSE)
 
-  # NOTE: stat_ellipse() layer REMOVED per request -- points only. betadisper
-  # above is untouched; this is a plotting-only change.
   p <- ggplot(scores, aes(x=PC1, y=PC2, colour=treatment, shape=timepoint)) +
-    geom_point(size=2.2, alpha=0.85) +
+    geom_point(size=3.2, alpha=0.9) +
     scale_colour_manual(values=TREATMENT_COLORS, drop=FALSE) +
-    theme_minimal(base_size=10) +
+    PLOT_THEME +
     labs(title=paste0("Aitchison PCA -- in vitro | ", community, if (!is.na(opt$timepoint_subset)) paste0(" | ", opt$timepoint_subset) else ""),
          subtitle=paste0("PC1 ", round(var_exp[1],1), "%, PC2 ", round(var_exp[2],1), "% of variance."),
          x=paste0("PC1 (", round(var_exp[1],1), "%)"),
@@ -437,9 +373,7 @@ for (community in communities) {
   f_png <- file.path(plot_dir, paste0("pca_invitro_", community, suffix, ".png"))
   ggsave(f_png, p, width=8, height=6)
   cat("  wrote", f_png, "\n")
-  # Vector PDF companion -- same plot object, ggsave's pdf device (cairo_pdf
-  # under the hood via the "pdf" device name) is vector by default, matching
-  # the convention already used for 08_tailocin_effect_plot.py's figures.
+
   f_pdf <- file.path(plot_dir, paste0("pca_invitro_", community, suffix, ".pdf"))
   ggsave(f_pdf, p, width=8, height=6, device=cairo_pdf)
   cat("  wrote", f_pdf, "\n")
@@ -450,12 +384,12 @@ for (community in communities) {
   write.csv(scree_df, file.path(opt$out_dir, paste0("pca_variance_explained_invitro_", community, suffix, ".csv")), row.names=FALSE)
 
   p_scree <- ggplot(scree_df, aes(x=PC)) +
-    geom_col(aes(y=pct_variance), fill="grey70") +
-    geom_line(aes(y=cum_pct_variance, group=1), colour="firebrick", linewidth=0.7) +
-    geom_point(aes(y=cum_pct_variance), colour="firebrick", size=1.6) +
+    geom_col(aes(y=pct_variance), fill=SCREE_BAR_COLOR) +
+    geom_line(aes(y=cum_pct_variance, group=1), colour=SCREE_LINE_COLOR, linewidth=0.9) +
+    geom_point(aes(y=cum_pct_variance), colour=SCREE_LINE_COLOR, size=2.2) +
     scale_y_continuous(limits=c(0, 100), expand=expansion(mult=c(0, 0.05))) +
-    theme_minimal(base_size=10) +
-    theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5, size=7)) +
+    PLOT_THEME +
+    theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5, size=FONT$scree_pc_labels)) +
     labs(title=paste0("Scree plot -- in vitro | ", community, if (!is.na(opt$timepoint_subset)) paste0(" | ", opt$timepoint_subset) else ""),
          x="Principal component", y="% variance explained")
   f_scree <- file.path(plot_dir, paste0("scree_invitro_", community, suffix, ".png"))

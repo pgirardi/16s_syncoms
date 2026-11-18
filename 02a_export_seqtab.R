@@ -2,7 +2,7 @@
 #
 # export_seqtab_to_csv.R
 #
-# Pure format-bridge, no analysis logic: converts a DADA2 seqtab_nochim .rds
+# Format-bridge only, no analysis logic: converts a DADA2 seqtab_nochim .rds
 # (samples x ASV-sequence count matrix, ASV sequences as column names) into a
 # long-format CSV (sample_uid, sequence, count) that's easy to work with in
 # Python/pandas. All actual reference-building logic lives in

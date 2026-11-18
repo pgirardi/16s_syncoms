@@ -9,10 +9,9 @@ SNPs and is the intended basis for that disambiguation.
 
 For each strain, in each direction independently: pools read counts across
 all monoculture wells for that strain, then takes the single most abundant
-ASV as the reference sequence. Flags (does NOT silently accept) any strain
-whose top ASV doesn't clearly dominate -- that's a sign of cross-contamination
-or an unexpectedly diverse/wrong well, and needs a human look before being
-trusted as a reference.
+ASV as the reference sequence. Flags any strain whose top ASV doesn't clearly 
+dominate -- a sign of cross-contamination or an unexpectedly diverse/wrong well, 
+ needs a human look before being trusted as a reference.
 
 Usage:
     python build_monoculture_reference_fasta.py \
@@ -44,8 +43,7 @@ NEAR_IDENTICAL_EDIT_DISTANCE = 3  # bp -- ASVs within this distance of the top
                                    # data: observed R2 top-vs-second distances
                                    # were exactly 1bp for every strain, while
                                    # genuinely separate (noise/background)
-                                   # ASVs sat 32-47bp away -- wide margin
-                                   # either side of this threshold.
+                                   # ASVs sat 32-47bp away
 
 
 def edit_distance(a: str, b: str) -> int:
@@ -113,8 +111,6 @@ def build_reference_for_direction(
         )
     merged = merged.dropna(subset=["sequence"])
 
-    # Pool counts across all wells for a given strain (usually 1 well/strain,
-    # but this handles replicates correctly if present) and per unique ASV.
     pooled = (
         merged.groupby(["STRAIN", "sequence"], as_index=False)["count"].sum()
     )
@@ -129,11 +125,7 @@ def build_reference_for_direction(
 
         # Walk down from the top ASV, including any ASV within
         # NEAR_IDENTICAL_EDIT_DISTANCE as a real operon-copy variant of this
-        # strain. Stops at the first ASV that's too far away -- doesn't keep
-        # searching past it, since count-ranking + a hard distance cutoff is
-        # enough to separate "same strain, different rRNA copy" from
-        # "unrelated background sequence" given the wide gap observed in
-        # real data (1bp vs 32-47bp).
+        # strain. Stops at the first ASV that's too far away 
         included = [{"sequence": top["sequence"], "count": top["count"], "edit_distance_from_top": 0}]
         for i in range(1, n_asvs):
             cand = grp_sorted.iloc[i]
@@ -161,7 +153,7 @@ def build_reference_for_direction(
                 "flagged_low_dominance": flagged,
             })
 
-        # Distance from top to the very next-ranked ASV regardless of whether
+        # Distance from top to the next-ranked ASV regardless of whether
         # it got included -- kept as a diagnostic column so you can still see
         # what's just outside the cutoff, not just what made it in.
         next_dist = None

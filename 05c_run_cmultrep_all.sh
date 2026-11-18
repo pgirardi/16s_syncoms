@@ -1,9 +1,9 @@
 #!/bin/bash
-# Run 07c_clr_cmultrepl.R over every 07 CLR output (merged + single-basis, all
+# Run 05c_clr_cmultrepl.R over every 05 CLR output (merged + single-basis, all
 # three trials). Output files keep the same names in a parallel directory, so
-# 08 / 09a / 09b can be pointed at clr_out_cmult/ instead of clr_out/ unchanged.
+# 06 / 07a / 07b can be pointed at clr_out_cmult/ instead of clr_out/ unchanged.
 #
-# Usage:  bash run_07c_all.sh [clr_out] [clr_out_cmult] [community_strain_abundance.csv]
+# Usage:  bash run_05c_all.sh [clr_out] [clr_out_cmult] [community_strain_abundance.csv]
 set -euo pipefail
 
 IN_DIR=${1:-clr_out}

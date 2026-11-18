@@ -13,7 +13,6 @@ from primer_lookup import lookup_in_planta_primer, fastq_paths
 
 XLSX_PATH = "growth_coll_plate_mapping.xlsx"
 
-# Confirmed base path from Patricia: two levels up from the working script directory.
 FASTQ_BASE_DIR_TEMPLATE = "../../demulti_data_trial{seq_run}"
 
 
@@ -27,9 +26,7 @@ def load_sheet_as_df(path, sheet_name):
 
 
 def classify_sample_type(growth_plate, growth_well):
-    """Classify a collection_map row based on what's in growth_plate/growth_well.
-    This encodes what we learned directly from the CollPlate4 D03+ dump:
-    experimental rows point to a real Plate#; everything else is a control/blank/empty."""
+    """Classify a collection_map row based on what's in growth_plate/growth_well."""
     gp = str(growth_plate).strip() if growth_plate is not None else "NA"
     gw = str(growth_well).strip() if growth_well is not None else "NA"
 
@@ -53,9 +50,7 @@ def classify_sample_type(growth_plate, growth_well):
 def normalize_strain_id(value):
     """Normalize a growth_plate value into a STRAIN id matching the format used
     everywhere else in the pipeline (monoculture reference, community_strain_
-    abundance.csv, in vitro's STRAIN column) -- e.g. 21.0 -> '21', 'p25C2' ->
-    'p25C2'. Only meaningful for rows already classified as sample_type ==
-    'monoculture'; callers should not call this for anything else."""
+    abundance.csv, in vitro's STRAIN column)"""
     s = str(value).strip()
     if re.match(r"^\d+\.0$", s):
         s = s[:-2]
@@ -80,12 +75,6 @@ def build():
         trial = row["trial"]
 
         sample_type = classify_sample_type(growth_plate, growth_well)
-
-        # STRAIN was previously never populated for in planta rows at all --
-        # only in vitro's builder set it. Since monoculture rows are exactly
-        # the case where growth_plate itself IS the strain ID, resolve it here
-        # so it survives the eventual concat with in_vitro_master_metadata.csv
-        # instead of silently coming out as NaN for every in planta row.
         strain = normalize_strain_id(growth_plate) if sample_type == "monoculture" else pd.NA
 
         # Primer/seq_run lookup -- hard fail (not silent NA) on any miss.
@@ -123,20 +112,11 @@ def build():
 
     df = pd.DataFrame(records)
 
-    # Join in community/treatment/dpi for experimental rows only.
-    # IMPORTANT: growth_plate labels (e.g. "Plate1") are REUSED across trials --
-    # Plate1 exists as a distinct physical plate in both trial 1 and trial 2.
-    # The join key must include `trial`, or rows collide and produce duplicate/
-    # wrong matches (caught via row-count QC below).
     gl = growth_layout.rename(columns={
         "growth_plate": "growth_plate_raw",
         "growth_well": "growth_well_raw",
     })
-    # growth_layout's own unnamed dropped-flag column (literal "dropped" / blank).
-    # Header is blank in the source file; after the str(c).strip() normalization
-    # above, a blank/NaN header becomes the literal string "nan" -- check for that,
-    # not "None" (learned the hard way: silent NaN-vs-None column-name mismatch
-    # is the same class of bug as the R dropped_flag string-comparison issue).
+
     dropped_col = [c for c in gl.columns if str(c).strip().lower() == "nan"]
     if dropped_col:
         gl = gl.rename(columns={dropped_col[0]: "dropped_flag_raw"})
@@ -175,10 +155,6 @@ def build():
         print("WARNING -- unclassified rows (need manual review):")
         print(unclassified[["sample_uid", "growth_plate_raw", "growth_well_raw"]])
 
-    # Monoculture rows MUST resolve to a real STRAIN id -- this is exactly the
-    # check that would have caught the missing-STRAIN-column bug at the source
-    # instead of it surfacing three scripts later as a confusing uniform 0.0
-    # self-match rate in 03a's monoculture self-check.
     monoculture_missing_strain = df[
         (df["sample_type"] == "monoculture") & (df["STRAIN"].isna())
     ]
@@ -189,7 +165,7 @@ def build():
             f"{monoculture_missing_strain[['sample_uid','growth_plate_raw']].to_string()}"
         )
 
-    # --- dropped_flag semantics (confirmed with Patricia) ---
+    # --- dropped_flag semantics  ---
     # dropped_flag == "dropped" means: NOT actually inoculated with culture (plant
     # looked unhealthy, so inoculation was skipped) -- but the plant WAS still
     # collected and sequenced. So these are real samples with real fastq data,

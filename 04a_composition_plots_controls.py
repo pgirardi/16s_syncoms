@@ -1,5 +1,4 @@
 """
-06_control_composition_plots.py
 
 Generate the four control-well composition plots (relative abundance,
 stacked bar) from community_strain_abundance.csv:
@@ -12,18 +11,10 @@ Design notes:
 - Taxon coloring/order is fixed (TAXON_ORDER below) so it's identical across
   all four plots and across reruns.
 - The ambiguous "59+p25C2" call_label from 03a is kept as its own category
-  rather than folded into either Leaf59 or p25C2 -- collapsing it would hide
-  a real signal (see the Leaf59/p25C2 R2-disambiguation note in the project
-  log).
-- in_planta_master_metadata.csv may or may not have a STRAIN column
-  depending on when it was built relative to the 00a fix that adds it for
-  monoculture rows. This script checks for STRAIN and falls back to
-  normalizing growth_plate_raw itself if it's missing, so it doesn't hard-fail
-  on an older metadata file -- but it prints a warning either way, since an
-  old file elsewhere in the metadata could mean other things are stale too.
+  rather than folded into either Leaf59 or p25C2
 
 Usage:
-    python 06_control_composition_plots.py \
+    python 04a_control_composition_plots.py \
         --community community_strain_abundance.csv \
         --in-vitro-metadata in_vitro_master_metadata.csv \
         --in-planta-metadata in_planta_master_metadata.csv \

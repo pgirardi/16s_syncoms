@@ -1,15 +1,11 @@
 #!/usr/bin/env Rscript
 # =============================================================================
-# 09b_permanova_inplanta.R
+# 07b_permanova_inplanta.R
 #
 # PERMANOVA + betadisper + Aitchison PCA for the IN PLANTA trials.
 #
-# Ported from 05b_permanova_inplanta.R to consume the current pipeline's CLR
-# output (07_clr_transform.py's long-format CSVs) instead of the old
-# clr_wide_<method>_....rds files. Statistical design is UNCHANGED from 05b:
 # each seedling is destructively sampled once, so ordinary free-permutation
-# adonis2() is correct here (no split-plot blocking needed, unlike 09a).
-# See "WHAT CHANGED FROM 05b" below for the input-format specifics.
+# adonis2() is correct here (no split-plot blocking needed, unlike 07a).
 #
 # Runs BOTH in planta trials by default (pass one long-format --clr_file at a
 # time; call the script twice, once per trial's file). Per project
@@ -18,7 +14,7 @@
 # label your output directories accordingly when you call it.
 #
 # ---------------------------------------------------------------------------
-# GROWTH_PLATE AND SEQ_PLATE AS COVARIATES (unchanged reasoning from 05b)
+# GROWTH_PLATE AND SEQ_PLATE AS COVARIATES
 # ---------------------------------------------------------------------------
 # growth_plate: expected to be crossed with dpi in both trials (every growth
 # plate has samples at both dpi3 and dpi5) -- checked at runtime, not
@@ -32,54 +28,8 @@
 # table(meta$collection_plate, meta$dpi) per trial if plate assignments
 # change -- checked at runtime below, not hardcoded.
 #
-# ---------------------------------------------------------------------------
-# WHY BUFFER / t0 / MONOCULTURE WELLS AREN'T HERE BY DEFAULT
-# ---------------------------------------------------------------------------
-# 07_clr_transform.py's in-planta CLR pass restricts to
-# sample_type == 'experimental' AND truly_inoculated == TRUE -- t0, dropped,
-# and monoculture wells never appear in the CLR long CSVs this script reads,
-# so there's no equivalent of 05b's --include_t0 / --exclude_dropped flags to
-# carry over; that filtering already happened upstream in Python.
-# Buffer IS present in the CLR file (community_background == 'Buffer') since
-# it's a real experimental sample_type, but is EXCLUDED from the default
-# --communities list below (matching 05b, which only ever analyzed
-# SynCom1/SynCom1C -- Buffer wells have no inoculated community to test a
-# compositional shift within). Pass --communities Buffer,SynCom1,SynCom1C
-# explicitly if you want Buffer analyzed too, e.g. as a negative-control
-# check that treatment doesn't spuriously shift the background/contaminant
-# signal in uninoculated wells.
-#
-# ---------------------------------------------------------------------------
-# WHAT CHANGED FROM 05b
-# ---------------------------------------------------------------------------
-# - Input: --clr_file points at ONE trial's long-format CSV (e.g.
-#   clr_inplanta_trial2_standard_long.csv) instead of --clr_dir + --method +
-#   looping both trials internally -- call this script once per trial. Use
-#   the _standard_long.csv file for the full-basis (old Fig 3) run, or the
-#   _p25C2_excluded_long.csv file for the indirect-effect (old Fig 4) run --
-#   same basis-consistency reasoning as 09a, see 07_clr_transform.py's
-#   docstring; do NOT use the dual-basis clr_inplanta_trial{N}_long.csv here.
-# - Communities inferred from community_background values in the file
-#   (default: SynCom1, SynCom1C; override with --communities).
-# - No --metadata / --exclude_dropped / --include_t0: see above.
-# - "collection_plate" is the seq_plate equivalent (same physical plate,
-#   renamed for clarity coming out of 07_clr_transform.py) -- column is
-#   called seq_plate in this script's `samp` frame either way.
-# - stat_ellipse() REMOVED from the PCA plot per request -- points only.
-#   betadisper()/permutest() are UNCHANGED and still run and reported.
-# - NEW: --dpi_subset lets you rerun restricted to one dpi (e.g.
-#   --dpi_subset 5) for a "which single dpi should the figure use"
-#   comparison -- same free-permutation treatment-only model as the full run,
-#   just on a smaller sample set, with its own betadisper and PCA. The
-#   default (no --dpi_subset) still produces the full treatment*dpi analysis
-#   across both dpi values -- both are useful, run both.
-# - NEW: PCA and scree plots are now also saved as vector PDFs alongside the
-#   existing PNGs (ggsave's default pdf device is vector, same convention as
-#   08_tailocin_effect_plot.py's figures) -- see "wrote" lines near the
-#   ggsave() calls below.
-#
 # Inputs : --clr_file <path to a clr_inplanta_trial{1,2}_standard_long.csv or
-#           _p25C2_excluded_long.csv, from 07_clr_transform.py>
+#           _p25C2_excluded_long.csv, from 05_clr_transform.py>
 # Outputs: <out_dir>/permanova_planta_<community>[_dpi<N>].csv
 #          <out_dir>/betadisper_planta_<community>[_dpi<N>]_by_<factor>.csv
 #          <out_dir>/betadisper_summary_planta_<community>[_dpi<N>].csv  (F/p per factor, NEW)
@@ -92,9 +42,9 @@
 #          <out_dir>/plots/scree_planta_<community>[_dpi<N>].pdf (NEW, vector)
 #
 # Usage:
-#   Rscript 09b_permanova_inplanta.R --clr_file clr_out/clr_inplanta_trial2_standard_long.csv --out_dir permanova_planta_trial2
-#   Rscript 09b_permanova_inplanta.R --clr_file clr_out/clr_inplanta_trial2_standard_long.csv --out_dir permanova_planta_trial2 --dpi_subset 5
-#   Rscript 09b_permanova_inplanta.R --clr_file clr_out/clr_inplanta_trial1_standard_long.csv --out_dir permanova_planta_trial1
+#   Rscript 07b_permanova_inplanta.R --clr_file clr_out/clr_inplanta_trial2_standard_long.csv --out_dir permanova_planta_trial2
+#   Rscript 07b_permanova_inplanta.R --clr_file clr_out/clr_inplanta_trial2_standard_long.csv --out_dir permanova_planta_trial2 --dpi_subset 5
+#   Rscript 07b_permanova_inplanta.R --clr_file clr_out/clr_inplanta_trial1_standard_long.csv --out_dir permanova_planta_trial1
 # =============================================================================
 
 suppressPackageStartupMessages({
@@ -121,14 +71,25 @@ plot_dir <- file.path(opt$out_dir, "plots")
 dir.create(plot_dir, showWarnings=FALSE, recursive=TRUE)
 set.seed(opt$seed)
 
-# Shared treatment palette/label standard -- IDENTICAL in 09a and 09b so
+# Shared treatment palette/label standard -- IDENTICAL in 07a and 07b so
 # Tailocin/delTFA/Buffer render as the same color regardless of which system
-# or script produced the plot. Okabe-Ito colorblind-safe palette (blue /
-# orange / vermillion). drop=FALSE in scale_colour_manual (used below) keeps
-# the mapping fixed even if a given subset happens to be missing one
-# treatment level, rather than reassigning colors to whatever levels are
-# present.
-TREATMENT_COLORS <- c(Buffer="#0072B2", delTFA="#E69F00", Tailocin="#D55E00")
+# or script produced the plot. Colors from NatParksPalettes "DeathValley"
+# (the project palette; flagged colorblind-safe in the package), chosen to
+# differ in both hue and lightness: slate blue / gold / dark rust.
+# drop=FALSE in scale_colour_manual (used below) keeps the mapping fixed even
+# if a given subset is missing one treatment level.
+TREATMENT_COLORS <- c(Buffer="#435F90", delTFA="#FEB359", Tailocin="#8C2B0E")
+# Scree plot colors, same palette: bars (individual PC) + line (cumulative).
+SCREE_BAR_COLOR  <- "#B47E83"
+SCREE_LINE_COLOR <- "#132F5B"
+
+FONT <- list(base = 14, axis_text = 12, scree_pc_labels = 10, title = 16, subtitle = 13)
+PLOT_THEME <- theme_minimal(base_size = FONT$base) +
+  theme(axis.text     = element_text(size = FONT$axis_text),
+        legend.text   = element_text(size = FONT$axis_text),
+        legend.title  = element_text(size = FONT$base),
+        plot.title    = element_text(size = FONT$title, face = "bold"),
+        plot.subtitle = element_text(size = FONT$subtitle))
 TREATMENT_LEVELS <- names(TREATMENT_COLORS)
 # in planta uses shorthand treatment codes (Buf/TFA/Tail) -- standardized to
 # the same full names used in vitro so labels/colors line up across systems.
@@ -156,15 +117,11 @@ drop_low_conf_taxa <- function(clr_mat, flagged) {
   sub <- clr_mat[, keep, drop = FALSE]
   sweep(sub, 1, rowMeans(sub))
 }
+P25C2_INOCULATED_BACKGROUNDS <- c("S1+C2", "SynCom1C")
 SYSTEM_TAG <- "planta"
 
 clr_long <- read.csv(opt$clr_file, stringsAsFactors=FALSE)
 
-# low_confidence_flag is written by pandas as the strings "True"/"False",
-# which read.csv keeps as CHARACTER -- so `low_confidence_flag == TRUE` is
-# never true and every flagged taxon silently looks unflagged (same bug
-# class as the dropped_flag "== 'True'" regression). Normalize to logical
-# once, here, so every downstream comparison is correct.
 as_flag <- function(x) toupper(trimws(as.character(x))) %in% c("TRUE", "T", "1")
 if ("low_confidence_flag" %in% names(clr_long)) {
   clr_long$low_confidence_flag <- as_flag(clr_long$low_confidence_flag)
@@ -198,10 +155,18 @@ for (community in communities) {
   rownames(clr_wide) <- clr_wide$sample_uid
   clr_mat <- as.matrix(clr_wide[, setdiff(colnames(clr_wide), "sample_uid"), drop=FALSE])
 
+  if (!(community %in% P25C2_INOCULATED_BACKGROUNDS) && "p25C2" %in% colnames(clr_mat)) {
+    clr_mat <- drop_low_conf_taxa(clr_mat, "p25C2")
+    cat("  p25C2 removed from parts (never inoculated into", community, ") -- CLR re-centered on",
+        ncol(clr_mat), "taxa\n")
+  }
+
   # Informational by default; --drop_low_confidence_taxa removes these and
   # re-centers the CLR on the remaining taxa (see drop_low_conf_taxa()).
   taxon_confidence <- sub_long %>% distinct(taxon, low_confidence_flag)
   flagged_taxa <- taxon_confidence %>% filter(low_confidence_flag == TRUE) %>% pull(taxon)
+  flagged_taxa <- intersect(flagged_taxa, colnames(clr_mat))
+  taxon_confidence <- taxon_confidence %>% filter(taxon %in% colnames(clr_mat))
   if (length(flagged_taxa) > 0) {
     cat("  NOTE: taxa flagged low_confidence in this basis (blank-derived QC, from 07):",
         paste(flagged_taxa, collapse=", "), "\n")
@@ -330,12 +295,10 @@ for (community in communities) {
   }
   write.csv(combined, file.path(opt$out_dir, paste0("permanova_planta_", community, suffix, ".csv")), row.names=FALSE)
 
-  # ── betadisper: location vs. spread. Kept exactly as in 05b -- a
-  # statistical test, unaffected by the ellipse being removed from the plot
-  # below. Ordinary free permutation throughout (destructive design, every
-  # row independent, no stratum restriction needed here unlike 09a).
-  # NOTE: F/p from permutest() now also collected into a
-  # betadisper_summary_*.csv (previously console-only, see 09a for why). ────
+  # ── betadisper: location vs. spread.  --
+  # Ordinary free permutation throughout (destructive design, every
+  # row independent, no stratum restriction needed here unlike 07a).
+  # NOTE: F/p from permutest() also collected into a betadisper_summary_*.csv
   betadisper_summary_rows <- list()
   for (fac in disp_facs) {
     bd <- betadisper(d, samp[[fac]], type="centroid")
@@ -367,11 +330,10 @@ for (community in communities) {
     left_join(taxon_confidence, by="taxon")
   write.csv(loadings_df, file.path(opt$out_dir, paste0("pca_loadings_planta_", community, suffix, ".csv")), row.names=FALSE)
 
-  # NOTE: stat_ellipse() layer REMOVED per request -- points only.
   p <- ggplot(scores, aes(x=PC1, y=PC2, colour=treatment, shape=timepoint)) +
-    geom_point(size=2.2, alpha=0.85) +
+    geom_point(size=3.2, alpha=0.9) +
     scale_colour_manual(values=TREATMENT_COLORS, drop=FALSE) +
-    theme_minimal(base_size=10) +
+    PLOT_THEME +
     labs(title=paste0("Aitchison PCA -- in planta | ", community, if (!is.na(opt$dpi_subset)) paste0(" | dpi ", opt$dpi_subset) else ""),
          subtitle=paste0("PC1 ", round(var_exp[1],1), "%, PC2 ", round(var_exp[2],1), "% of variance."),
          x=paste0("PC1 (", round(var_exp[1],1), "%)"),
@@ -379,7 +341,7 @@ for (community in communities) {
   f_png <- file.path(plot_dir, paste0("pca_planta_", community, suffix, ".png"))
   ggsave(f_png, p, width=8, height=6)
   cat("  wrote", f_png, "\n")
-  # Vector PDF companion -- same convention as 09a and 08_tailocin_effect_plot.py.
+  # Vector PDF companion -- same convention as 07a and 06_tailocin_effect_plot.py.
   f_pdf <- file.path(plot_dir, paste0("pca_planta_", community, suffix, ".pdf"))
   ggsave(f_pdf, p, width=8, height=6, device=cairo_pdf)
   cat("  wrote", f_pdf, "\n")
@@ -389,12 +351,12 @@ for (community in communities) {
   write.csv(scree_df, file.path(opt$out_dir, paste0("pca_variance_explained_planta_", community, suffix, ".csv")), row.names=FALSE)
 
   p_scree <- ggplot(scree_df, aes(x=PC)) +
-    geom_col(aes(y=pct_variance), fill="grey70") +
-    geom_line(aes(y=cum_pct_variance, group=1), colour="firebrick", linewidth=0.7) +
-    geom_point(aes(y=cum_pct_variance), colour="firebrick", size=1.6) +
+    geom_col(aes(y=pct_variance), fill=SCREE_BAR_COLOR) +
+    geom_line(aes(y=cum_pct_variance, group=1), colour=SCREE_LINE_COLOR, linewidth=0.9) +
+    geom_point(aes(y=cum_pct_variance), colour=SCREE_LINE_COLOR, size=2.2) +
     scale_y_continuous(limits=c(0, 100), expand=expansion(mult=c(0, 0.05))) +
-    theme_minimal(base_size=10) +
-    theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5, size=7)) +
+    PLOT_THEME +
+    theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5, size=FONT$scree_pc_labels)) +
     labs(title=paste0("Scree plot -- in planta | ", community, if (!is.na(opt$dpi_subset)) paste0(" | dpi ", opt$dpi_subset) else ""),
          x="Principal component", y="% variance explained")
   f_scree <- file.path(plot_dir, paste0("scree_planta_", community, suffix, ".png"))
